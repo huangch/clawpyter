@@ -40,6 +40,6 @@ uvx jupyter-mcp-server start \
 
 echo $! > /tmp/jupytermcp.pid
 
-echo jupyter_url http://$JUPYTER_IP:8888
-echo jupyter_token $JUPYTER_TOKEN
-echo notebook_dir $NOTEBOOK_DIR
+echo \""jupyterUrl"\": \""http://$JUPYTER_IP:8888"\",
+echo \""jupyterToken"\": \""$JUPYTER_TOKEN"\",
+echo \""notebookDir"\": \""$NOTEBOOK_DIR"\"

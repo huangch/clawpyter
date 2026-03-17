@@ -17,11 +17,11 @@ function resolveNotebookIdentifier(params, cfg) {
 }
 export default function register(api) {
     const cfg = api?.pluginConfig ?? api?.config ?? {};
-    const effectiveBaseUrl = cfg.baseUrl ?? "http://127.0.0.1:4040";
-    const effectiveTimeoutMs = cfg.timeoutMs ?? 30000;
-    const client = new JupyterMcpClient(effectiveBaseUrl, 
-    // cfg.authToken,
-    effectiveTimeoutMs);
+    const mcp_url = cfg.mcpUrl ?? "http://127.0.0.1:4040";
+    const jupyter_url = cfg.jupyterUrl ?? "http://127.0.0.1:8888";
+    const jupyter_token = cfg.jupyterToken ?? "";
+    const timeout_ms = cfg.timeoutMs ?? 30000;
+    const client = new JupyterMcpClient(mcp_url, jupyter_url, jupyter_token, timeout_ms);
     const toolDefs = [
         {
             openclawName: "jupyter_list_files",
@@ -304,4 +304,16 @@ export default function register(api) {
             },
         }, { optional: true });
     }
+    api.registerTool({
+        name: "jupyter_info",
+        description: "Retrieve current configuration settings for both Jupyter server and MCP server. Returns the effective connection parameters and timeouts including: Jupyter server URL (jupyter_url) and Jupyter authentication token (jupyter_token). Use this tool to verify server connectivity details, construct notebook URLs, or diagnose connection issues.",
+        parameters: Type.Object({}),
+        async execute(_id, params) {
+            const info = {
+                jupyter_url,
+                jupyter_token,
+            };
+            return JupyterMcpClient.asToolText("Jupyter info", JSON.stringify(info, null, 2));
+        },
+    }, { optional: true });
 }

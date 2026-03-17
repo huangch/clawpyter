@@ -62,8 +62,6 @@ export default function register(api: any) {
 
   const client = new JupyterMcpClient(
     mcp_url,
-    jupyter_url,
-    jupyter_token,
     timeout_ms,
   );
 

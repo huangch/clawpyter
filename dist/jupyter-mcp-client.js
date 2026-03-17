@@ -1,10 +1,12 @@
 export class JupyterMcpClient {
-    baseUrl;
+    mcpUrl;
+    jupyterUrl;
+    jupyterToken;
     timeoutMs;
-    constructor(baseUrl, 
-    // private readonly authToken?: string,
-    timeoutMs = 30000) {
-        this.baseUrl = baseUrl;
+    constructor(mcpUrl, jupyterUrl, jupyterToken, timeoutMs = 30000) {
+        this.mcpUrl = mcpUrl;
+        this.jupyterUrl = jupyterUrl;
+        this.jupyterToken = jupyterToken;
         this.timeoutMs = timeoutMs;
     }
     async post(path, body) {
@@ -15,10 +17,7 @@ export class JupyterMcpClient {
                 "content-type": "application/json",
                 "accept": "application/json, text/event-stream",
             };
-            // if (this.authToken) {
-            //   headers["authorization"] = `Bearer ${this.authToken}`;
-            // }
-            const res = await fetch(`${this.baseUrl}${path}`, {
+            const res = await fetch(`${this.mcpUrl}${path}`, {
                 method: "POST",
                 headers,
                 body: JSON.stringify(body),

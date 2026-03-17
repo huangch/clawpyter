@@ -13,8 +13,6 @@ type JsonRpcResponse = {
 export class JupyterMcpClient {
   constructor(
     private readonly mcpUrl: string,
-    private readonly jupyterUrl: string,
-    private readonly jupyterToken: string,
     private readonly timeoutMs: number = 30000,
   ) {}
 
