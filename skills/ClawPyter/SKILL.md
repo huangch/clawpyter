@@ -9,12 +9,13 @@ description: MUST use ClawPyter for all Jupyter notebook, kernel, and file opera
 
 ALWAYS use ClawPyter whenever the user performs ANY operation involving Jupyter notebooks, kernels, notebook files, or live code execution in a Jupyter environment.
 
-ClawPyter provides three mandatory tool categories (15 core tools + 3 compatibility wrappers):
+ClawPyter provides three mandatory tool categories (16 core tools + 3 compatibility wrappers):
 
-**Server Management (3 tools)** — MUST use for file and kernel inspection
+**Server Management (4 tools)** — MUST use for file and kernel inspection
 - `jupyter_list_files`
 - `jupyter_list_kernels`
 - `jupyter_connect_to_jupyter`
+- `jupyter_info`
 
 **Notebook Management (5 tools + 3 compatibility wrappers)** — MUST use before all cell operations
 - `jupyter_use_notebook` (REQUIRED first step)
@@ -125,6 +126,32 @@ Cell operations (insert, edit, execute, delete) work ONLY on the **currently act
 - Multiple Jupyter instances are available
 
 **SECURITY NOTE:** Do NOT casually ask users to paste tokens. Only request when absolutely necessary for debugging.
+
+### `jupyter_info`
+**PURPOSE:** Retrieve current configuration settings for both Jupyter and MCP servers.
+
+**MUST use this to:**
+- Verify active server URLs and connection parameters
+- Obtain Jupyter authentication token for URL construction
+- Diagnose connection issues by inspecting effective settings
+- Construct access URLs for the Jupyter Lab web interface
+- Document server configuration for logging or debugging
+
+**Arguments:** None (no parameters needed)
+
+**Returns:** JSON object with EXACT fields:
+- `jupyter_url` — the active Jupyter server URL (e.g., `http://127.0.0.1:8888`)
+- `jupyterToken` — the authentication token for the Jupyter server
+- `mcpUrl` — the MCP server URL (e.g., `http://127.0.0.1:4040`)
+- `timeoutMs` — request timeout in milliseconds (default: 30000)
+
+**Common use cases:**
+- Constructing Jupyter Lab URLs: `[jupyterUrl]/?token=[jupyterToken]/lab/tree/[notebook_path]`
+- Verifying server connectivity before other operations
+- Providing user-friendly documentation of current server endpoints
+- Troubleshooting authentication or timeout issues
+
+**Example:** After calling this tool, you will know the exact URLs and token to debug connection problems or share with users.
 
 ## Notebook Management Tools — MANDATORY before all cell operations
 
@@ -527,6 +554,46 @@ This separates "file exists on disk" from "server has active handle to notebook"
 
 ---
 
+## Accessing the Jupyter Server UI
+
+### Why You Need the Jupyter UI URL
+
+While ClawPyter provides comprehensive programmatic access to notebooks through the MCP tools (read, execute, modify cells), the Jupyter Lab web interface is essential for:
+
+- **Visual inspection and debugging**: Reviewing notebook outputs, charts, and rendered HTML in their native environment
+- **Interactive exploration**: Running quick exploratory code, testing hypotheses, and verifying computations interactively
+- **Complex visualizations**: Displaying rich media (plots, dataframes, images) that require Jupyter's rendering capabilities
+- **Manual interventions**: Fixing notebook issues, managing kernel state, or performing operations not covered by the MCP API
+- **Collaborative review**: Sharing a direct link to notebook state for human review or approval
+
+### Constructing the Jupyter Lab URL
+
+The complete URL format combines the server connection details with the notebook path:
+
+```
+[jupyter_url]/?token=[jupyter_token]/lab/tree/[notebook_path]
+```
+
+**URL Components:**
+- `[jupyter_url]`: Server IP address or hostname (from `jupyter_connect_to_jupyter` or configuration)
+- `[jupyter_token]`: Authentication token (generated at startup or from `jupyter_connect_to_jupyter`)
+- `[notebook_path]`: Relative path to notebook file from Jupyter root (obtained from `use_notebook` or `list_notebooks`)
+- `:8888`: Default Jupyter port (adjust if configured differently)
+
+### Example
+
+If the server is running at `http://192.168.0.1:8888` with token `01234567-89ab-cdef-0123-456789abcdef` and the notebook is `projects/data_analysis.ipynb`:
+
+```
+http://192.168.0.1:8888/?token=01234567-89ab-cdef-0123-456789abcdef/lab/tree/projects/data_analysis.ipynb
+```
+
+**Protocol Flow:**
+1. Use `jupyter_list_notebooks` or `use_notebook` to obtain the notebook file path
+2. Extract the Jupyter server URL and token from your configuration or connection response
+3. Construct the URL using the format above
+4. Share the URL or open it in a browser for visual inspection and interactive work
+
 ## CRITICAL SUMMARY — Absolute requirements for correct operation
 
 ### The Five Absolute Rules — NEVER violate these
@@ -545,3 +612,4 @@ ClawPyter is a **context-dependent operator**, not a stateless API:
 - **Persistence context** (insert_execute_code_cell vs execute_code) → controls cell persistence
 
 **Consequence:** Violating context sequencing WILL cause operation failures. Always follow the prescribed sequences.
+

@@ -12,16 +12,17 @@ if [ $# -eq 0 ]; then
 fi
 
 NOTEBOOK_DIR="$1"
+JUPYTER_TOKEN=$(uuid)
+JUPYTER_IP=$(ip -4 route get 1.1.1.1 | grep -oP 'src \K\S+')
 
 export BROWSER=/usr/bin/microsoft-edge
-JUPYTER_TOKEN=$(uuid)
 jupyter lab \
 	--notebook-dir "$NOTEBOOK_DIR" \
-	--no-browser \
 	--IdentityProvider.token=${JUPYTER_TOKEN} \
 	--ip=0.0.0.0 \
 	--port 8888 \
 	> /tmp/jupyterlab.log 2>&1 &
+	# --no-browser \
 
 echo $! > /tmp/jupyterlab.pid
 
@@ -38,3 +39,7 @@ uvx jupyter-mcp-server start \
 		> /tmp/jupytermcp.log 2>&1 &
 
 echo $! > /tmp/jupytermcp.pid
+
+echo jupyter_url http://$JUPYTER_IP:8888
+echo jupyter_token $JUPYTER_TOKEN
+echo notebook_dir $NOTEBOOK_DIR

@@ -168,12 +168,12 @@ The AI understands the context of your notebook and operates on it step by step 
 
 ## Available Tools (Complete Reference)
 
-ClawPyter provides **18 tools** (15 core + 3 compatibility wrappers) organized into three categories. All tools use the format `jupyter:TOOLNAME`.
+ClawPyter provides **19 tools** (16 core + 3 compatibility wrappers) organized into three categories. All tools use the format `jupyter_TOOLNAME`.
 
-### Server Management Tools (3 tools)
-These tools inspect the Jupyter server's filesystem and kernel state.
+### Server Management Tools (4 tools)
+These tools inspect the Jupyter server's filesystem, kernel state, and configuration.
 
-#### `jupyter:list_files`
+#### `jupyter_list_files`
 **Purpose:** Explore and list files/directories in the Jupyter server's workspace.
 
 **When to use:** Locate notebook files, explore directory structure, check file existence.
@@ -184,7 +184,7 @@ These tools inspect the Jupyter server's filesystem and kernel state.
 
 ---
 
-#### `jupyter:list_kernels`
+#### `jupyter_list_kernels`
 **Purpose:** List all available and running kernels (computation engines).
 
 **When to use:** Check kernel availability/status, monitor kernel resources, identify kernel IDs.
@@ -193,7 +193,7 @@ These tools inspect the Jupyter server's filesystem and kernel state.
 
 ---
 
-#### `jupyter:connect_to_jupyter`
+#### `jupyter_connect_to_jupyter`
 **Purpose:** Dynamically connect to a different Jupyter server without restarting.
 
 **When to use:** Switch to another Jupyter server instance, connect with authentication token.
@@ -204,10 +204,35 @@ These tools inspect the Jupyter server's filesystem and kernel state.
 
 ---
 
+#### `jupyter_info`
+**Purpose:** Retrieve current Jupyter and MCP server configuration settings.
+
+**When to use:**
+- Verify active server URLs and connection details
+- Obtain Jupyter authentication token for URL construction
+- Diagnose connection issues by inspecting effective settings
+- Construct Jupyter Lab access URLs for manual inspection
+- Document current server configuration for logging/debugging
+
+**Key parameters:** None (no parameters needed)
+
+**Returns:** JSON object with configuration details:
+- `effectiveJupyterUrl` — The active Jupyter server URL (e.g., `http://127.0.0.1:8888`)
+- `effectiveJupyterToken` — The authentication token for Jupyter server
+- `effectiveMcpUrl` — The MCP server URL (e.g., `http://127.0.0.1:4040`)
+- `effectiveTimeoutMs` — Request timeout in milliseconds (default: 30000)
+
+**Example use case:** Call this to get the Jupyter URL and token, then construct a shareable notebook link:
+```
+http://[jupyter_host]:8888/?token=[jupyter_token]/lab/tree/[notebook_path]
+```
+
+---
+
 ### Notebook Management Tools (5 core + 3 compatibility)
 These tools manage notebook sessions, activation, and inspection.
 
-#### `jupyter:use_notebook` ⭐ REQUIRED FIRST STEP
+#### `jupyter_use_notebook` ⭐ REQUIRED FIRST STEP
 **Purpose:** Activate a notebook for all subsequent cell operations.
 
 **CRITICAL:** Call this FIRST before ANY cell operations. Never skip this step.
@@ -220,7 +245,7 @@ These tools manage notebook sessions, activation, and inspection.
 
 ---
 
-#### `jupyter:list_notebooks`
+#### `jupyter_list_notebooks`
 **Purpose:** List all notebooks currently managed by the session handler.
 
 **When to use:** Verify active notebook, confirm activation, see all open sessions.
@@ -229,13 +254,13 @@ These tools manage notebook sessions, activation, and inspection.
 
 ---
 
-#### `jupyter:read_notebook`
+#### `jupyter_read_notebook`
 **Purpose:** Read notebook structure and cell contents.
 
 **When to use:** Inspect cells before editing, understand notebook structure, review content.
 
 **Key parameters:**
-- `notebook_name` (required): Identifier from `jupyter:list_notebooks`
+- `notebook_name` (required): Identifier from `jupyter_list_notebooks`
 - `response_format` (optional): `"brief"` (fast overview) or `"detailed"` (full source)
 - Pagination options: `start_index`, `limit`
 
@@ -243,7 +268,7 @@ These tools manage notebook sessions, activation, and inspection.
 
 ---
 
-#### `jupyter:restart_notebook`
+#### `jupyter_restart_notebook`
 **Purpose:** Restart the kernel and clear memory state.
 
 **When to use:** Reset to clean state, fix stuck kernels, clear variables and outputs.
@@ -252,7 +277,7 @@ These tools manage notebook sessions, activation, and inspection.
 
 ---
 
-#### `jupyter:unuse_notebook`
+#### `jupyter_unuse_notebook`
 **Purpose:** Disconnect from and release a notebook session.
 
 **When to use:** Finish notebook work, free resources, clear active notebook.
@@ -263,9 +288,9 @@ These tools manage notebook sessions, activation, and inspection.
 
 #### Compatibility Wrappers (3 tools)
 For backward compatibility:
-- `jupyter:restart_notebook_compat` — Falls back to `notebook_path` if needed
-- `jupyter:unuse_notebook_compat` — Falls back to `notebook_path` if needed
-- `jupyter:read_notebook_compat` — Falls back to `notebook_path` if needed
+- `jupyter_restart_notebook_compat` — Falls back to `notebook_path` if needed
+- `jupyter_unuse_notebook_compat` — Falls back to `notebook_path` if needed
+- `jupyter_read_notebook_compat` — Falls back to `notebook_path` if needed
 
 **Recommendation:** Prefer strict versions (without `_compat`) for new code.
 
@@ -274,7 +299,7 @@ For backward compatibility:
 ### Cell Operations (7 tools)
 These tools manipulate and execute cells in the active notebook.
 
-#### `jupyter:insert_cell`
+#### `jupyter_insert_cell`
 **Purpose:** Insert a new cell at a specified position.
 
 **Parameters:** `cell_index` (0-based, -1=append), `cell_type` (code/markdown), `cell_source`
@@ -283,7 +308,7 @@ These tools manipulate and execute cells in the active notebook.
 
 ---
 
-#### `jupyter:overwrite_cell_source`
+#### `jupyter_overwrite_cell_source`
 **Purpose:** Replace the entire content of an existing cell.
 
 **Parameters:** `cell_index` (0-based), `cell_source` (complete new content)
@@ -292,7 +317,7 @@ These tools manipulate and execute cells in the active notebook.
 
 ---
 
-#### `jupyter:execute_cell`
+#### `jupyter_execute_cell`
 **Purpose:** Run a specific cell and return its outputs.
 
 **Parameters:** `cell_index` (0-based), `timeout` (default: 90), `stream` (for long tasks)
@@ -301,7 +326,7 @@ These tools manipulate and execute cells in the active notebook.
 
 ---
 
-#### `jupyter:insert_execute_code_cell` ⭐ PREFERRED
+#### `jupyter_insert_execute_code_cell` ⭐ PREFERRED
 **Purpose:** Insert a code cell AND execute it immediately (preferred over separate calls).
 
 **Parameters:** `cell_index` (-1=append), `cell_source`, `timeout`
@@ -310,7 +335,7 @@ These tools manipulate and execute cells in the active notebook.
 
 ---
 
-#### `jupyter:read_cell`
+#### `jupyter_read_cell`
 **Purpose:** Read a single cell with metadata and outputs.
 
 **Parameters:** `cell_index` (0-based), `include_outputs` (default: true)
@@ -319,7 +344,7 @@ These tools manipulate and execute cells in the active notebook.
 
 ---
 
-#### `jupyter:delete_cell`
+#### `jupyter_delete_cell`
 **Purpose:** Delete one or more cells.
 
 **Parameters:** `cell_indices` (list of 0-based positions), `include_source` (default: true)
@@ -328,7 +353,7 @@ These tools manipulate and execute cells in the active notebook.
 
 ---
 
-#### `jupyter:execute_code`
+#### `jupyter_execute_code`
 **Purpose:** Execute code in kernel WITHOUT saving to notebook.
 
 **When to use:** Magic commands (`%timeit`, `%pip`), shell commands (`!git`), debugging, profiling.
@@ -385,11 +410,17 @@ For reliable notebook operations, always follow these sequences:
 3. jupyter:use_notebook       → Activate notebook on new server
 ```
 
+### Sequence 7: Retrieve server information (for debugging/documentation)
+```
+1. jupyter:info → Get current Jupyter URL, MCP URL, token, and timeout
+2. Use the returned values to construct notebook URLs or diagnose issues
+```
+
 **Critical Rules:**
-- ALWAYS call `jupyter:use_notebook` first before ANY cell operations
+- ALWAYS call `jupyter_use_notebook` first before ANY cell operations
 - ALWAYS delete cells in DESCENDING index order
 - ALWAYS use 0-based indexing (first cell = 0, not 1)
-- ALWAYS use `jupyter:insert_execute_code_cell` when inserting and running together
+- ALWAYS use `jupyter_insert_execute_code_cell` when inserting and running together
 
 ---
 
@@ -433,15 +464,15 @@ You're using an incorrect parameter name. Check the tool documentation:
 - Use `cell_source` (not `source`)
 - Use `cell_index` (not `index`)
 - Use `cell_indices` for delete (not `cell_index`)
-- Use colon format: `jupyter:tool_name` (not `jupyter_tool_name`)
+- Use colon format: `jupyter_tool_name` (not `jupyter_tool_name`)
 
 ---
 
 **Notebook operations fail even though the file exists**
 
 You MUST explicitly open a notebook before operating on its cells:
-1. Call `jupyter:use_notebook` with the notebook path and name
-2. Call `jupyter:list_notebooks` to confirm activation
+1. Call `jupyter_use_notebook` with the notebook path and name
+2. Call `jupyter_list_notebooks` to confirm activation
 3. Then perform cell operations
 
 The server cannot read or edit cells in a notebook that hasn't been activated.
@@ -565,7 +596,7 @@ clawpyter/
 ### Key Files Explained
 
 **`src/index.ts`** — The plugin's main entry point. Defines all 18 tools with:
-- OpenClaw tool names (`jupyter:*` format)
+- OpenClaw tool names (`jupyter_*` format)
 - Parameter specifications and validation
 - Description text for the AI
 - Translation logic between OpenClaw and jupyter-mcp-server formats

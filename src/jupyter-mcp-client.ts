@@ -12,8 +12,9 @@ type JsonRpcResponse = {
 
 export class JupyterMcpClient {
   constructor(
-    private readonly baseUrl: string,
-    // private readonly authToken?: string,
+    private readonly mcpUrl: string,
+    private readonly jupyterUrl: string,
+    private readonly jupyterToken: string,
     private readonly timeoutMs: number = 30000,
   ) {}
 
@@ -27,11 +28,7 @@ export class JupyterMcpClient {
         "accept": "application/json, text/event-stream",
       };
 
-      // if (this.authToken) {
-      //   headers["authorization"] = `Bearer ${this.authToken}`;
-      // }
-
-      const res = await fetch(`${this.baseUrl}${path}`, {
+      const res = await fetch(`${this.mcpUrl}${path}`, {
         method: "POST",
         headers,
         body: JSON.stringify(body),
