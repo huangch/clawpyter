@@ -5,6 +5,7 @@ type PluginConfig = {
   mcpUrl?: string;
   jupyterToken?: string;
   jupyterUrl?: string;
+  notebookDir?: string;
   defaultNotebook?: string;
   timeoutMs?: number;
 };
