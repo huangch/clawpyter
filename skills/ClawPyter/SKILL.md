@@ -1,398 +1,547 @@
 ---
 name: ClawPyter
-description: Use ClawPyter for Jupyter notebook, kernel, and file operations. Activate a notebook before cell operations, use notebook_path as the file path, use notebook_name as the active notebook identifier, and follow each tool's exact argument rules.
+description: MUST use ClawPyter for all Jupyter notebook, kernel, and file operations. ALWAYS activate a notebook before cell operations. MUST use notebook_path as the file path relative to server root. MUST use notebook_name as the active notebook session identifier. ALWAYS follow each tool's exact argument rules precisely.
 ---
 
 # ClawPyter
 
-## When to use this skill
+## CRITICAL: When to use this skill
 
-Use ClawPyter whenever the user wants to work with Jupyter notebooks, kernels, notebook files, or live code execution in a Jupyter environment.
+ALWAYS use ClawPyter whenever the user performs ANY operation involving Jupyter notebooks, kernels, notebook files, or live code execution in a Jupyter environment.
 
-ClawPyter supports three groups of operations (15 tools total), matching the upstream Jupyter MCP Server categorization:
+ClawPyter provides three mandatory tool categories (15 core tools + 3 compatibility wrappers):
 
-- **Server Management** (3 tools)
-  - `jupyter_list_files`
-  - `jupyter_list_kernels`
-  - `jupyter_connect_to_jupyter`
-- **Multi-Notebook** (5 tools)
-  - `jupyter_use_notebook`
-  - `jupyter_list_notebooks`
-  - `jupyter_restart_notebook`
-  - `jupyter_unuse_notebook`
-  - `jupyter_read_notebook`
-- **Cell Tools** (7 tools)
-  - `jupyter_insert_cell`
-  - `jupyter_overwrite_cell_source`
-  - `jupyter_execute_cell`
-  - `jupyter_insert_execute_code_cell`
-  - `jupyter_read_cell`
-  - `jupyter_delete_cell`
-  - `jupyter_execute_code`
+**Server Management (3 tools)** — MUST use for file and kernel inspection
+- `jupyter_list_files`
+- `jupyter_list_kernels`
+- `jupyter_connect_to_jupyter`
 
-## Core mental model
+**Notebook Management (5 tools + 3 compatibility wrappers)** — MUST use before all cell operations
+- `jupyter_use_notebook` (REQUIRED first step)
+- `jupyter_list_notebooks`
+- `jupyter_restart_notebook` / `jupyter_restart_notebook_compat`
+- `jupyter_unuse_notebook` / `jupyter_unuse_notebook_compat`
+- `jupyter_read_notebook` / `jupyter_read_notebook_compat`
 
-### `notebook_path`
-`notebook_path` is the notebook file path, relative to the Jupyter server root, such as:
+**Cell Operations (7 tools)** — ALWAYS operate on active notebook only
+- `jupyter_insert_cell`
+- `jupyter_overwrite_cell_source`
+- `jupyter_execute_cell`
+- `jupyter_insert_execute_code_cell`
+- `jupyter_read_cell`
+- `jupyter_delete_cell`
+- `jupyter_execute_code`
 
+## MANDATORY: Core mental model
+
+### `notebook_path` — ALWAYS required
+`notebook_path` is the **absolute, relative-to-server-root path** to the notebook file. Examples:
 - `Untitled.ipynb`
 - `projects/demo/test.ipynb`
 
-Use this when identifying a notebook file on disk.
+**MUST use this when identifying a notebook file on disk.**
 
-### `notebook_name`
-`notebook_name` is the unique session identifier used by the notebook manager to track an active notebook. It is **required** by the upstream server alongside `notebook_path` when calling `jupyter_use_notebook`.
+### `notebook_name` — ALWAYS required for server operations
+`notebook_name` is the **unique session identifier** the Jupyter server uses to manage an active notebook session. It is **MANDATORY** when calling `jupyter_use_notebook`.
 
-When the caller does not supply an explicit `notebook_name`, this wrapper automatically uses `notebook_path` as the identifier. Do **not** leave `notebook_name` empty or assume it is optional — an empty string will cause the server to reject or mistrack the session.
+**CRITICAL RULES:**
+- `notebook_path` and `notebook_name` are BOTH required to activate a notebook
+- NEVER send an empty string for `notebook_name` — the upstream server WILL reject it
+- When the user provides only a file path, MUST pass `notebook_path` for both parameters
+- ALWAYS confirm the assigned `notebook_name` by calling `jupyter_list_notebooks` immediately after activation
 
-Do **not** ask the user to guess `notebook_name` unless troubleshooting requires it. After activation, use `jupyter_list_notebooks` to confirm the identifier the server assigned.
+**Do NOT assume the server will auto-assign a name.** The server requires BOTH values with non-empty content.
 
-### Active notebook
-Most cell operations work on the **currently activated notebook**.
-That means the safe default workflow is:
+### Active notebook — MANDATORY context for cell operations
+Cell operations (insert, edit, execute, delete) work ONLY on the **currently activated notebook**. 
 
-1. locate the file
-2. activate the notebook
-3. inspect the notebook
-4. perform cell operations
+**ABSOLUTE WORKFLOW REQUIREMENT:**
+1. Identify the file → use `jupyter_list_files` if needed
+2. **ACTIVATE the notebook** → use `jupyter_use_notebook` (NEVER skip this step)
+3. Inspect the structure → use `jupyter_read_notebook` when cell positions are uncertain
+4. Perform cell operations → use cell tools
 
-## Recommended workflow
+**VIOLATION OF THIS SEQUENCE WILL CAUSE FAILURES.** Do NOT attempt cell operations without first calling `jupyter_use_notebook`.
 
-When the user refers to a notebook file:
-
-1. Use `jupyter_list_files` if needed to confirm the file exists.
-2. Use `jupyter_use_notebook` to activate the notebook.
-3. Use `jupyter_read_notebook` to inspect current cells when relevant.
-4. Only then use cell-level tools.
-
-Do **not** jump directly to cell operations unless you already know the correct notebook is active.
-
-## Server management tools
+## Server Management Tools — MUST use for initial inspection
 
 ### `jupyter_list_files`
-List files and directories recursively in the Jupyter-visible filesystem.
+**PURPOSE:** List files and directories recursively in the Jupyter server's file system.
 
-Use it to:
-- explore notebook locations
-- confirm a notebook file exists
-- inspect directories before activating a notebook
+**MUST use this to:**
+- Explore notebook file locations on the server
+- Confirm a notebook file exists before activation
+- Inspect directory structure
 
-Arguments:
-- `path` (optional): starting path, default `""`
-- `max_depth` (optional): recursion depth, default `1`, max `3`
-- `start_index` (optional): pagination start, default `0`
-- `limit` (optional): page size, default `25`, `0` means no limit
-- `pattern` (optional): glob filter
+**Arguments (all optional but documented):**
+- `path` (optional, default: `""` = root): starting directory path
+- `max_depth` (optional, default: `1`, max: `3`): recursion depth
+- `start_index` (optional, default: `0`): pagination start position
+- `limit` (optional, default: `25`, `0` = no limit): results per page
+- `pattern` (optional): glob pattern filter (e.g., `*.ipynb`)
 
-Returns a tab-separated table with:
-- `Path`
-- `Type`
-- `Size`
-- `Last_Modified`
+**Returns:** Tab-separated table with EXACT columns:
+- `Path` — file/directory path
+- `Type` — "file", "directory", "notebook", or "error"
+- `Size` — formatted as B, KB, or MB (empty for directories)
+- `Last_Modified` — YYYY-MM-DD HH:MM:SS format
+
+**Example:** Use `max_depth: 2, pattern: "*.ipynb"` to find all notebooks up to 2 levels deep.
 
 ### `jupyter_list_kernels`
-List available and running kernels.
+**PURPOSE:** List all available and running kernels on the Jupyter server.
 
-Use it to:
-- inspect kernel state
-- check active connections
-- troubleshoot kernel availability
+**MUST use this to:**
+- Inspect kernel availability and state
+- Check for stuck or idle kernels
+- Verify kernel resources before activation
+- Obtain kernel IDs for manual kernel attachment
 
-Returns a tab-separated table with:
-- `ID`
-- `Name`
-- `Display_Name`
-- `Language`
-- `State`
-- `Connections`
-- `Last_Activity`
-- `Environment`
+**Arguments:** None (no parameters needed)
+
+**Returns:** Tab-separated table with EXACT columns:
+- `ID` — unique kernel identifier
+- `Name` — kernel name/type (e.g., "python3", "ir")
+- `Display_Name` — human-readable kernel name
+- `Language` — programming language (e.g., "python", "R")
+- `State` — current state: "idle", "busy", or "unknown"
+- `Connections` — number of active connections
+- `Last_Activity` — YYYY-MM-DD HH:MM:SS timestamp
+- `Environment` — kernel environment variables (truncated if long)
 
 ### `jupyter_connect_to_jupyter`
-Connect to a different Jupyter server dynamically.
+**PURPOSE:** Connect to a different Jupyter server dynamically without restarting.
 
-Arguments:
-- `jupyter_url`
-- `jupyter_token` (optional)
-- `provider` (optional, default `"jupyter"`)
+**CRITICAL AVAILABILITY NOTE:** This tool is **NOT available** when running as a Jupyter server extension. If used in extension mode, it WILL fail. Advise users to use server-side pre-configuration instead.
 
-Use this when:
-- switching to another Jupyter server during the same conversation
-- the current server is not the one the user wants
+**Arguments (case-sensitive):**
+- `jupyter_url` (**required**): Full Jupyter server URL (e.g., `http://localhost:8888`)
+- `jupyter_token` (optional): Authentication token for the server
+- `provider` (optional, default: `"jupyter"`): Provider type
 
-**Availability note:** This tool is **not available** when the MCP server is running as a Jupyter server extension. In that deployment mode, connection details must be pre-configured on the server side. If the user is running the extension variant and calls this tool, it will fail — advise them to use server-side configuration instead.
+**Use this when:**
+- Switching to a different Jupyter server during the conversation
+- The default server is not the target server
+- Multiple Jupyter instances are available
 
-Do **not** casually ask the user to paste tokens unless necessary.
+**SECURITY NOTE:** Do NOT casually ask users to paste tokens. Only request when absolutely necessary for debugging.
 
-## Multi-Notebook tools
+## Notebook Management Tools — MANDATORY before all cell operations
 
 ### `jupyter_use_notebook`
-Activate a notebook for later notebook and cell operations.
+**PURPOSE:** Activate a notebook for all subsequent notebook and cell operations.
 
-Arguments:
-- `notebook_path` (**required**): notebook file path relative to the server root
-- `notebook_name` (**required** by upstream server): unique session identifier for the notebook. When not explicitly provided, this wrapper uses `notebook_path` as the value. Do **not** send an empty string — the upstream server requires a non-empty identifier.
-- `mode` (optional): `"connect"` or `"create"`, default `"connect"`
-- `kernel_id` (optional): specific kernel to use
+**CRITICAL:** This is the FIRST tool to call when working with any notebook. Do NOT skip this step.
 
-Important:
-- This is usually the **first notebook-specific tool** to call.
-- Both `notebook_path` and `notebook_name` are sent to the server. When you only know the file path, pass it as both values or rely on the wrapper's automatic fallback.
-- After activation, use `jupyter_list_notebooks` to confirm the `notebook_name` the server is tracking.
+**Arguments (all REQUIRED):**
+- `notebook_path` (**required**): File path relative to server root (e.g., `Untitled.ipynb`, `projects/test.ipynb`)
+- `notebook_name` (**required**): Unique session identifier (MUST be non-empty string; NEVER an empty string or null)
+- `mode` (optional, default: `"connect"`): Either `"connect"` to connect existing or `"create"` to create new
+- `kernel_id` (optional): Specific kernel ID to attach (if omitted, server assigns one)
 
-Typical use:
-- open an existing notebook
-- create a new notebook
-- switch to another notebook
+**ABSOLUTE REQUIREMENTS:**
+- BOTH `notebook_path` and `notebook_name` MUST be provided as non-empty strings
+- NEVER send empty string for `notebook_name`
+- ALWAYS call `jupyter_list_notebooks` immediately after to confirm activation
+
+**Arguments breakdown:**
+- For existing notebook: use `mode: "connect"`
+- For new notebook: use `mode: "create"`
+- When user provides only file path, pass it as both `notebook_path` and `notebook_name`
+
+**Returns:** Success message with activation status, kernel ID, and notebook overview.
+
+**IMMEDIATE NEXT STEP:** Call `jupyter_list_notebooks` to confirm the `notebook_name` the server assigned.
+
+---
 
 ### `jupyter_list_notebooks`
-List notebooks that have already been activated through `jupyter_use_notebook`.
+**PURPOSE:** List all notebooks currently managed by the notebook session handler.
 
-Returns a table with:
-- `Name`
-- `Path`
-- `Kernel_ID`
-- `Kernel_Status`
-- `Activate`
+**CRITICAL:** Use immediately after `jupyter_use_notebook` to confirm activation and identify the active notebook.
 
-Important:
-- This is **not** a raw filesystem listing.
-- It only shows notebooks already known to the notebook manager.
+**Arguments:** None (no parameters needed)
+
+**Returns:** Tab-separated table with EXACT columns:
+- `Name` — notebook session identifier
+- `Path` — notebook file path
+- `Kernel_ID` — attached kernel ID
+- `Kernel_Status` — kernel status (idle, busy, dead, etc.)
+- `Activate` — "✓" if currently active, empty otherwise
+
+**Important constraint:** This tool returns ONLY notebooks already activated through `jupyter_use_notebook`. It is NOT a raw filesystem listing.
+
+---
 
 ### `jupyter_restart_notebook`
-Restart the kernel for a specific notebook.
+**PURPOSE:** Restart the kernel for a specific notebook and clear memory state.
 
-Arguments:
-- `notebook_name` (required): the identifier reported by `jupyter_list_notebooks`
+**Arguments:**
+- `notebook_name` (**required**): The exact notebook identifier from `jupyter_list_notebooks`
 
-Use it when:
-- the kernel is stuck
-- the user wants a clean state
-- memory state should be cleared
+**Use this when:**
+- The kernel is stuck or unresponsive
+- User needs a clean memory state
+- Previous cell executions should be cleared
+
+**Returns:** Success message confirming kernel restart and memory state cleared.
+
+---
+
+### `jupyter_restart_notebook_compat` (Compatibility wrapper)
+**PURPOSE:** Restart notebook kernel with optional fallback to notebook_path.
+
+**Arguments:**
+- `notebook_name` (optional)
+- `notebook_path` (optional)
+
+**Use this when:** Legacy code provides only notebook_path. Prefers notebook_name; falls back to notebook_path if notebook_name is empty.
+
+**Recommendation:** Use the strict `jupyter_restart_notebook` version instead when possible.
+
+---
 
 ### `jupyter_unuse_notebook`
-Disconnect from a specific notebook and release resources.
+**PURPOSE:** Disconnect from a specific notebook and release all resources.
 
-Arguments:
-- `notebook_name` (required): the identifier reported by `jupyter_list_notebooks`
+**Arguments:**
+- `notebook_name` (**required**): The exact notebook identifier from `jupyter_list_notebooks`
 
-Use it when:
-- the user is done with a notebook session
-- resources should be released
-- the current active notebook should be cleared
+**Use this when:**
+- User is done with a notebook session
+- Resources must be released
+- Switching to a different notebook
+
+**Returns:** Success message confirming disconnection and resource release.
+
+---
+
+### `jupyter_unuse_notebook_compat` (Compatibility wrapper)
+**PURPOSE:** Unuse notebook with optional fallback to notebook_path.
+
+**Arguments:**
+- `notebook_name` (optional)
+- `notebook_path` (optional)
+
+**Use this when:** Legacy code provides only notebook_path. Prefers notebook_name; falls back to notebook_path if notebook_name is empty.
+
+**Recommendation:** Use the strict `jupyter_unuse_notebook` version instead when possible.
+
+---
 
 ### `jupyter_read_notebook`
-Read notebook cells from a specific notebook.
+**PURPOSE:** Read notebook structure and cell contents.
 
-Arguments:
-- `notebook_name` (required): the identifier reported by `jupyter_list_notebooks`
-- `response_format` (optional): `"brief"` or `"detailed"`, default `"brief"`
-- `start_index` (optional): pagination start, default `0`
-- `limit` (optional): maximum number of cells, default `20`, `0` means no limit
+**CRITICAL:** Use BEFORE any cell edits to understand cell positions and structure.
 
-Recommended usage:
-- use `"brief"` with larger limits to get notebook structure overview
-- then use `"detailed"` with narrow ranges when exact cell content matters
+**Arguments:**
+- `notebook_name` (**required**): The exact notebook identifier from `jupyter_list_notebooks`
+- `response_format` (optional, default: `"brief"`): 
+  - `"brief"` — returns first line and line count (fast, for overview)
+  - `"detailed"` — returns full cell source (slower, for editing)
+- `start_index` (optional, default: `0`): pagination start index
+- `limit` (optional, default: `20`, `0` = no limit): max cells to return
 
-Use it when:
-- locating cells before editing, deleting, or running them
-- reviewing notebook structure
-- checking execution counts and cell ordering
+**RECOMMENDED WORKFLOW:**
+1. First call with `response_format: "brief", limit: 50+` to get notebook structure
+2. Then call with `response_format: "detailed", start_index: X, limit: 5` for specific cells
 
-## Cell tools
+**Returns:** Notebook content with cell index, type, source, execution count, and metadata.
 
-All cell tools below operate on the **currently activated notebook** unless otherwise stated.
+---
+
+### `jupyter_read_notebook_compat` (Compatibility wrapper)
+**PURPOSE:** Read notebook with optional fallback to notebook_path.
+
+**Arguments:**
+- `notebook_name` (optional)
+- `notebook_path` (optional)
+- `response_format` (optional, default: `"brief"`)
+- `start_index` (optional, default: `0`)
+- `limit` (optional, default: `20`)
+
+**Use this when:** Legacy code provides only notebook_path. Prefers notebook_name; falls back to notebook_path if notebook_name is empty.
+
+**Recommendation:** Use the strict `jupyter_read_notebook` version instead when possible.
+
+## Cell Tools — ALWAYS operate on the activated notebook only
+
+**CRITICAL CONSTRAINT:** All cell tools below operate EXCLUSIVELY on the currently activated notebook. Do NOT attempt to specify a different notebook in these tools. If the wrong notebook is active, MUST call `jupyter_use_notebook` to switch first.
 
 ### `jupyter_insert_cell`
-Insert a new cell at a specified position.
+**PURPOSE:** Insert a new cell at a specified position in the active notebook.
 
-Arguments:
-- `cell_index`: target insertion index, `-1` means append at end
-- `cell_type`: `"code"` or `"markdown"`
-- `cell_source`: source text for the new cell
+**Arguments (all REQUIRED):**
+- `cell_index` (**required**): Target insertion position (0-based). MUST use `-1` to append at the end
+- `cell_type` (**required**): MUST be exactly `"code"` or `"markdown"` (lowercase)
+- `cell_source` (**required**): Complete source text for the new cell
 
-Use it when:
-- adding a new code cell
-- adding a markdown explanation cell
-- inserting a cell at a precise location
+**EXACT PARAMETER NAMES:** Use `cell_index`, `cell_type`, `cell_source` — NOT `index`, `source`, or `type`.
 
-Important:
-- Prefer `cell_source`, not plain `source`
-- Prefer `cell_index`, not plain `index`
+**Use this when:**
+- Adding a new code cell at a specific position
+- Adding markdown documentation or explanations
+- Inserting a cell between existing cells
+
+**Returns:** Success message with insertion confirmation and surrounding cell structure (up to 5 cells above/below).
+
+---
 
 ### `jupyter_overwrite_cell_source`
-Replace the entire source of an existing cell.
+**PURPOSE:** Replace the entire content of an existing cell.
 
-Arguments:
-- `cell_index`
-- `cell_source`
+**Arguments (all REQUIRED):**
+- `cell_index` (**required**): Cell position (0-based) to overwrite
+- `cell_source` (**required**): Complete new source text (replaces ALL existing content)
 
-Returns a diff-style comparison of the change.
+**Returns:** Diff-style comparison showing changes:
+- Lines with `+` are added
+- Lines with `-` are deleted
+- Unchanged lines have no prefix
 
-Use it when:
-- updating code in an existing cell
-- replacing markdown content
-- rewriting a cell completely
+**Use this when:**
+- Updating code in an existing cell
+- Replacing markdown content completely
+- Rewriting a cell without inserting new cells
+
+---
 
 ### `jupyter_execute_cell`
-Execute an existing cell by index.
+**PURPOSE:** Execute an existing cell and return its outputs.
 
-Arguments:
-- `cell_index`
-- `timeout` (optional): default `90`
-- `stream` (optional): default `false`
-- `progress_interval` (optional): default `5`
+**Arguments:**
+- `cell_index` (**required**): Cell position (0-based) to execute
+- `timeout` (optional, default: `90`): Maximum execution time in seconds
+- `stream` (optional, default: `false`): Enable streaming progress for long-running cells
+- `progress_interval` (optional, default: `5`): Seconds between progress updates when streaming
 
-Use it when:
-- the cell already exists and should now run
-- a just-edited cell needs execution
-- outputs need to be refreshed
+**Returns:** List of outputs including:
+- Text output
+- HTML/rendered content
+- Images and other media
+- Error messages if execution fails
 
-Returns outputs, which may include:
-- text
-- HTML
-- images
+**Use this when:**
+- The cell already exists and needs execution
+- A newly edited cell should run immediately
+- Cell outputs need refreshing
+
+---
 
 ### `jupyter_insert_execute_code_cell`
-Insert a code cell and execute it immediately.
+**PURPOSE:** Insert a code cell AND execute it in one operation (preferred shortcut).
 
-Arguments:
-- `cell_index`
-- `cell_source`
-- `timeout` (optional): default `90`
+**Arguments:**
+- `cell_index` (**required**): Target position (0-based). MUST use `-1` to append
+- `cell_source` (**required**): Code to insert and execute
+- `timeout` (optional, default: `90`): Maximum execution time in seconds
 
-Use it when:
-- the user wants code inserted and run in one step
-- a quick one-shot action should still be saved in the notebook
+**Returns:** Both insertion confirmation AND execution results (outputs, errors).
 
-This is usually better than calling insert then execute separately.
+**CRITICAL RULE:** ALWAYS use this instead of separate `insert_cell` + `execute_cell` calls when the user wants both operations. This is more efficient and saves state.
+
+**Use this when:**
+- User requests: "add this code and run it"
+- Quick test code should be saved and executed immediately
+- New cells should be immediately verified
+
+---
 
 ### `jupyter_read_cell`
-Read one cell from the currently activated notebook.
+**PURPOSE:** Read a single specific cell with metadata and optionally outputs.
 
-Arguments:
-- `cell_index`
-- `include_outputs` (optional): default `true`
+**Arguments:**
+- `cell_index` (**required**): Cell position (0-based) to read
+- `include_outputs` (optional, default: `true`): Include execution outputs (code cells only)
 
-Returns:
-- cell metadata
-- source
-- outputs for code cells if enabled
+**Returns:** List containing:
+- Cell metadata (index, type, execution_count)
+- Full source code
+- Execution outputs if `include_outputs: true` and cell is code type
 
-Use it when:
-- the user wants one specific cell
-- verifying content before overwrite
-- checking outputs of one cell
+**Use this when:**
+- Verifying cell content before editing
+- Checking outputs of a single cell
+- Need exact cell details for debugging
+
+---
 
 ### `jupyter_delete_cell`
-Delete one or more cells from the currently activated notebook.
+**PURPOSE:** Delete one or more cells from the active notebook.
 
-Arguments:
-- `cell_indices`: list of indices
-- `include_source` (optional): default `true`
+**Arguments:**
+- `cell_indices` (**required**): Array of cell positions to delete (0-based)
+- `include_source` (optional, default: `true`): Include deleted cell source in response
 
-Important:
-- When deleting many cells, delete in **descending index order** to avoid index shifting.
-- If the user mentions only one cell, convert internally to a one-element list if needed.
+**CRITICAL DELETION RULE:** When deleting MULTIPLE cells, MUST delete in DESCENDING index order to avoid index shifting. Example: delete indices [5, 3, 1] in that order, NOT [1, 3, 5].
+
+**Returns:** Success message with deletion confirmation and deleted cell source code (if requested).
+
+**Use this when:**
+- User wants to remove cells
+- Cleaning up notebook structure
+- Deleting failed experiments
+
+---
 
 ### `jupyter_execute_code`
-Execute code directly in the current notebook kernel without saving it as a notebook cell.
+**PURPOSE:** Execute code directly in the kernel WITHOUT saving to notebook structure.
 
-Arguments:
-- `code`
-- `timeout` (optional): default `30`, max `60`
+**Arguments:**
+- `code` (**required**): Code to execute (supports magic and shell commands)
+- `timeout` (optional, default: `30`, max: `60`): Execution timeout in seconds
 
-Use it for:
-- Jupyter magic commands such as `%timeit`
-- shell commands such as `!git status`
-- performance profiling and debugging
-- checking variable values
-- quick temporary calculations
+**Returns:** List of outputs (text, HTML, images, shell results).
 
-Do **not** use it to:
-- import new modules or perform variable assignments that affect subsequent notebook execution
-- run dangerous code without permission
-- silently replace proper notebook edits when the user explicitly wants the notebook changed
+**EXPLICIT USE CASES — MUST use for these:**
+- Jupyter magic commands: `%timeit`, `%pip install`, `%matplotlib inline`, etc.
+- Shell commands: `!git status`, `!ls ~/projects`, etc.
+- Performance profiling and debugging
+- Variable inspection: `print(df.head())`, `print(type(var))`
+- Quick temporary calculations: `np.mean([1,2,3])`
 
-## Practical operating rules
+**EXPLICIT PROHIBITIONS — MUST NOT use for these:**
+- Importing new modules or setting variables that affect subsequent notebook execution
+- Dangerous code that might harm the server without explicit permission
+- Replacing proper notebook edits when user explicitly wants cells modified
 
-- Start from `notebook_path` when identifying files.
-- Use `jupyter_use_notebook` before notebook reads or cell operations unless you already know the correct notebook is active.
-- Always supply a non-empty `notebook_name` to `jupyter_use_notebook`; when omitting it, the wrapper falls back to `notebook_path` automatically.
-- Use `jupyter_list_notebooks` to inspect tracked notebook sessions and confirm the active `notebook_name`.
-- Use `jupyter_read_notebook` before cell edits when cell positions are uncertain.
-- Use `jupyter_insert_execute_code_cell` when the user wants both insertion and execution.
-- Use `jupyter_execute_code` for temporary, unsaved execution.
-- Use `jupyter_delete_cell` with descending indices when deleting multiple cells.
+**Example:** `%timeit sum(range(1000))` or `!git log --oneline | head -5`
 
-## Recommended operating sequences
+## MANDATORY Operating Rules — ALWAYS follow precisely
 
-### To inspect a notebook
-1. `jupyter_list_files`
-2. `jupyter_use_notebook`
-3. `jupyter_read_notebook`
+1. **ALWAYS identify files first** using `jupyter_list_files` when notebook path is uncertain
+2. **ALWAYS call `jupyter_use_notebook` first** before ANY notebook or cell operations (no exceptions)
+3. **ALWAYS verify activation** by calling `jupyter_list_notebooks` immediately after `jupyter_use_notebook`
+4. **ALWAYS confirm notebook_name** from `jupyter_list_notebooks` for subsequent operations
+5. **ALWAYS read notebook structure** with `jupyter_read_notebook` before cell edits when cell positions are uncertain
+6. **ALWAYS use `jupyter_insert_execute_code_cell`** when user wants both insertion and execution (do not use separate calls)
+7. **ALWAYS use `jupyter_execute_code`** for magic commands, shell commands, and temporary unsaved code
+8. **ALWAYS delete cells in descending index order** when deleting multiple cells (prevent index shifting)
+9. **ALWAYS verify cell_index is 0-based** (first cell is index 0, not 1)
+10. **NEVER skip notebook activation** — cell tools require an active notebook context
 
-### To insert a new cell
-1. `jupyter_use_notebook`
-2. `jupyter_insert_cell`
-3. optionally `jupyter_execute_cell`
+## PRESCRIBED Operating Sequences — MUST follow in exact order
 
-### To modify an existing cell
-1. `jupyter_use_notebook`
-2. `jupyter_read_notebook`
-3. `jupyter_overwrite_cell_source`
-4. optionally `jupyter_execute_cell`
+### Sequence 1: Inspect a notebook (START HERE for file exploration)
+1. `jupyter_list_files` — Find the notebook file
+2. `jupyter_use_notebook` — Activate it (REQUIRED)
+3. `jupyter_list_notebooks` — Confirm activation
+4. `jupyter_read_notebook` — Inspect structure and cells
 
-### To insert and run code immediately
-1. `jupyter_use_notebook`
-2. `jupyter_insert_execute_code_cell`
+### Sequence 2: Insert a new cell
+1. `jupyter_use_notebook` — Ensure correct notebook is active
+2. `jupyter_read_notebook` — (optional) Check where to insert
+3. `jupyter_insert_cell` — Add the cell
+4. `jupyter_execute_cell` — (optional) Run if needed
 
-### To run temporary code without changing notebook structure
-1. `jupyter_use_notebook`
-2. `jupyter_execute_code`
+### Sequence 3: Modify an existing cell (SAFE approach)
+1. `jupyter_use_notebook` — Activate notebook
+2. `jupyter_read_notebook` — Locate exact cell index and review content
+3. `jupyter_overwrite_cell_source` — Replace cell content
+4. `jupyter_execute_cell` — Run the updated cell
 
-### To remove cells
-1. `jupyter_use_notebook`
-2. `jupyter_delete_cell`
+### Sequence 4: Insert AND execute in one step (PREFERRED shortcut)
+1. `jupyter_use_notebook` — Activate notebook
+2. `jupyter_insert_execute_code_cell` — Insert and run immediately (better than separate calls)
 
-### To switch servers
-1. `jupyter_connect_to_jupyter`
-2. `jupyter_list_files`
-3. `jupyter_use_notebook`
+### Sequence 5: Run temporary code without saving
+1. `jupyter_use_notebook` — Activate notebook
+2. `jupyter_execute_code` — Execute code in kernel (not saved to notebook)
 
-## Error interpretation
+### Sequence 6: Delete cells safely
+1. `jupyter_use_notebook` — Activate notebook
+2. `jupyter_read_notebook` — Identify exact indices to delete
+3. `jupyter_delete_cell` — Delete in DESCENDING index order only
 
-### "Field required"
-Interpret this as a schema mismatch or wrong argument name.
+### Sequence 7: Switch Jupyter servers
+1. `jupyter_connect_to_jupyter` — Connect to new server
+2. `jupyter_list_files` — Verify access to files on new server
+3. `jupyter_use_notebook` — Activate notebook on new server
 
-Common causes:
-- using `source` when the tool expects `cell_source`
-- using `cell_index` when the tool expects `cell_indices`
-- providing notebook-path-style input to a tool that now expects `notebook_name`
-- trying a notebook-management tool before the notebook has been properly activated
+## Troubleshooting — Diagnostic error responses
 
-### "quote_from_bytes() expected bytes"
-Interpret this as a backend runtime failure after the request already reached the tool handler.
+### "Field required" or schema validation error
+**CAUSE:** Incorrect parameter name or missing required argument.
 
-Usually suspect:
-- wrong notebook identifier format
-- incomplete active notebook state
-- a mismatch between the current active notebook and the tool being called
+**COMMON MISTAKES:**
+- Using `source` instead of `cell_source`
+- Using `index` instead of `cell_index` or `cell_indices`
+- Using `nb_name` or `notebook_id` instead of `notebook_name`
+- Passing empty string for `notebook_name`
+- Missing `-1` when appending (use `cell_index: -1` to append)
 
-This is usually **not** an HTTP header problem if the request already succeeded at the transport level.
+**SOLUTION:** Check tool documentation carefully. Use EXACT parameter names and ensure all required arguments are provided.
 
-### Notebook file exists but notebook operations still fail
-Use this sequence:
-1. `jupyter_list_files`
-2. `jupyter_use_notebook`
-3. `jupyter_list_notebooks`
-4. `jupyter_read_notebook`
+---
 
-This separates:
-- "file exists on disk"
-from
-- "server has an active handle to that notebook"
+### "Notebook not found" or "Active notebook not set"
+**CAUSE:** Cell operation attempted without first calling `jupyter_use_notebook`.
 
-## Final operating rule
+**DIAGNOSTIC SEQUENCE:**
+1. Call `jupyter_list_notebooks` to check if any notebook is active
+2. If no active notebook, MUST call `jupyter_use_notebook` first
+3. Confirm with `jupyter_list_notebooks` again
+4. Retry the cell operation
 
-Treat ClawPyter as a notebook-aware Jupyter operator, not just a code runner. Prefer explicit notebook activation and notebook inspection before cell mutations, and follow each tool's exact argument rules rather than assuming names are interchangeable.
+**SOLUTION:** Always call `jupyter_use_notebook` before cell operations.
+
+---
+
+### "quote_from_bytes() expected bytes" or similar backend error
+**CAUSE:** Runtime failure after request reached the tool handler. Usually indicates state mismatch.
+
+**LIKELY ISSUES:**
+- Wrong notebook identifier format (invalid characters or encoding)
+- Incomplete active notebook state
+- Mismatch between the activated notebook and the tool being called
+- Notebook file deleted or moved on server
+
+**DIAGNOSTIC SEQUENCE:**
+1. `jupyter_list_notebooks` — Verify active notebook state
+2. `jupyter_list_files` — Confirm notebook file still exists
+3. `jupyter_use_notebook` — Re-establish notebook session
+4. `jupyter_read_notebook` — Verify notebook is readable
+5. Retry the failing operation
+
+---
+
+### Notebook file exists but operations still fail
+**DIAGNOSTIC SEQUENCE (REQUIRED):**
+1. `jupyter_list_files` — Confirm file exists on disk
+2. `jupyter_use_notebook` — Activate the notebook
+3. `jupyter_list_notebooks` — Confirm activation and check assigned notebook_name
+4. `jupyter_read_notebook` — Verify server has valid handle to notebook
+5. THEN retry the operation
+
+This separates "file exists on disk" from "server has active handle to notebook".
+
+---
+
+### Cell operations fail with index errors
+**CHECK:**
+- Is the cell index 0-based? (first cell = 0, not 1)
+- Does the cell index exist? (use `jupyter_read_notebook` to list all indices)
+- When deleting multiple cells, are they in DESCENDING order?
+
+**SOLUTION:** Use `jupyter_read_notebook` to see exact cell indices.
+
+---
+
+## CRITICAL SUMMARY — Absolute requirements for correct operation
+
+### The Five Absolute Rules — NEVER violate these
+1. **ALWAYS activate first** — NEVER attempt cell operations without calling `jupyter_use_notebook` first
+2. **ALWAYS use both paths** — MUST provide BOTH `notebook_path` AND `notebook_name` to `jupyter_use_notebook` (NEVER empty)
+3. **ALWAYS verify activation** — IMMEDIATELY call `jupyter_list_notebooks` after `jupyter_use_notebook` to confirm the server's assigned notebook_name
+4. **ALWAYS use descending order** — MUST delete cells in DESCENDING index order to prevent index shifting errors
+5. **ALWAYS follow sequences** — MUST follow the prescribed operating sequences IN ORDER
+
+### State-Aware Design
+ClawPyter is a **context-dependent operator**, not a stateless API:
+- **File context** (jupyter_list_files) → informs notebook selection
+- **Session context** (jupyter_use_notebook) → establishes active notebook
+- **Structure context** (jupyter_read_notebook) → precedes all mutations
+- **Operation context** (cell tools) → execute on active notebook only
+- **Persistence context** (insert_execute_code_cell vs execute_code) → controls cell persistence
+
+**Consequence:** Violating context sequencing WILL cause operation failures. Always follow the prescribed sequences.

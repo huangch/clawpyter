@@ -166,72 +166,367 @@ The AI understands the context of your notebook and operates on it step by step 
 
 ---
 
-## Available Tools (What the AI Can Do)
+## Available Tools (Complete Reference)
 
-ClawPyter gives the AI 15 tools organized into three groups:
+ClawPyter provides **18 tools** (15 core + 3 compatibility wrappers) organized into three categories. All tools use the format `jupyter:TOOLNAME`.
 
-### Server Management
-| Tool | What It Does |
-|---|---|
-| `jupyter_list_files` | Browse files and folders in your Jupyter workspace |
-| `jupyter_list_kernels` | List all running computation engines (kernels) |
-| `jupyter_connect_to_jupyter` | Switch to a different Jupyter server during a session |
+### Server Management Tools (3 tools)
+These tools inspect the Jupyter server's filesystem and kernel state.
 
-### Notebook Management
-| Tool | What It Does |
-|---|---|
-| `jupyter_use_notebook` | Open/activate a notebook so the AI can work with it |
-| `jupyter_list_notebooks` | See which notebooks are currently open and active |
-| `jupyter_read_notebook` | Read the cells of an open notebook |
-| `jupyter_restart_notebook` | Restart the kernel and clear the notebook's memory |
-| `jupyter_unuse_notebook` | Close and release a notebook session |
+#### `jupyter:list_files`
+**Purpose:** Explore and list files/directories in the Jupyter server's workspace.
 
-### Cell Operations
-| Tool | What It Does |
-|---|---|
-| `jupyter_insert_cell` | Insert a new code or text cell at any position |
-| `jupyter_overwrite_cell_source` | Replace the contents of an existing cell |
-| `jupyter_execute_cell` | Run a specific cell and return its output |
-| `jupyter_insert_execute_code_cell` | Insert a new cell and run it immediately |
-| `jupyter_read_cell` | Read one specific cell including its output |
-| `jupyter_delete_cell` | Delete one or more cells |
-| `jupyter_execute_code` | Run code temporarily without saving it to the notebook |
+**When to use:** Locate notebook files, explore directory structure, check file existence.
+
+**Key parameters:** `path`, `max_depth` (1-3), `pattern` (glob filter), `limit` (default: 25)
+
+**Returns:** Tab-separated table with file path, type, size, and modification timestamp.
 
 ---
 
-## Typical Workflow
+#### `jupyter:list_kernels`
+**Purpose:** List all available and running kernels (computation engines).
 
-When the AI works with a notebook, it follows a safe sequence:
+**When to use:** Check kernel availability/status, monitor kernel resources, identify kernel IDs.
 
-1. **Locate the file** — confirm the notebook exists in your workspace
-2. **Open the notebook** — activate it so subsequent operations target the right file
-3. **Read the notebook** — scan its current cells to understand context
-4. **Perform operations** — insert, edit, run, or delete cells as needed
-
-This prevents the AI from accidentally modifying the wrong notebook or operating on stale information.
+**Returns:** Table with kernel ID, name, language, state (idle/busy), connections, and last activity.
 
 ---
 
-## Troubleshooting
+#### `jupyter:connect_to_jupyter`
+**Purpose:** Dynamically connect to a different Jupyter server without restarting.
 
-**The AI says it can't reach Jupyter.**
-Make sure you've run `./start_jpy.sh` and that both JupyterLab (port 8888) and jupyter-mcp-server (port 4040) are running. You can check with:
-```bash
-curl http://127.0.0.1:4040
+**When to use:** Switch to another Jupyter server instance, connect with authentication token.
+
+**Key parameters:** `jupyter_url` (required), `jupyter_token` (optional), `provider` (default: jupyter)
+
+**Important:** Not available when running as a Jupyter extension.
+
+---
+
+### Notebook Management Tools (5 core + 3 compatibility)
+These tools manage notebook sessions, activation, and inspection.
+
+#### `jupyter:use_notebook` ⭐ REQUIRED FIRST STEP
+**Purpose:** Activate a notebook for all subsequent cell operations.
+
+**CRITICAL:** Call this FIRST before ANY cell operations. Never skip this step.
+
+**Key parameters (ALL REQUIRED):**
+- `notebook_path`: File path relative to server root (e.g., `analysis.ipynb`)
+- `notebook_name`: Unique session identifier (MUST be non-empty)
+- `mode` (optional): `"connect"` or `"create"` (default: `"connect"`)
+- `kernel_id` (optional): Specific kernel to attach
+
+---
+
+#### `jupyter:list_notebooks`
+**Purpose:** List all notebooks currently managed by the session handler.
+
+**When to use:** Verify active notebook, confirm activation, see all open sessions.
+
+**Returns:** Table with notebook name, path, kernel ID, kernel status, and active indicator.
+
+---
+
+#### `jupyter:read_notebook`
+**Purpose:** Read notebook structure and cell contents.
+
+**When to use:** Inspect cells before editing, understand notebook structure, review content.
+
+**Key parameters:**
+- `notebook_name` (required): Identifier from `jupyter:list_notebooks`
+- `response_format` (optional): `"brief"` (fast overview) or `"detailed"` (full source)
+- Pagination options: `start_index`, `limit`
+
+**Best practice:** First call with `brief` to scan, then `detailed` for specific cells.
+
+---
+
+#### `jupyter:restart_notebook`
+**Purpose:** Restart the kernel and clear memory state.
+
+**When to use:** Reset to clean state, fix stuck kernels, clear variables and outputs.
+
+**Key parameters:** `notebook_name` (required)
+
+---
+
+#### `jupyter:unuse_notebook`
+**Purpose:** Disconnect from and release a notebook session.
+
+**When to use:** Finish notebook work, free resources, clear active notebook.
+
+**Key parameters:** `notebook_name` (required)
+
+---
+
+#### Compatibility Wrappers (3 tools)
+For backward compatibility:
+- `jupyter:restart_notebook_compat` — Falls back to `notebook_path` if needed
+- `jupyter:unuse_notebook_compat` — Falls back to `notebook_path` if needed
+- `jupyter:read_notebook_compat` — Falls back to `notebook_path` if needed
+
+**Recommendation:** Prefer strict versions (without `_compat`) for new code.
+
+---
+
+### Cell Operations (7 tools)
+These tools manipulate and execute cells in the active notebook.
+
+#### `jupyter:insert_cell`
+**Purpose:** Insert a new cell at a specified position.
+
+**Parameters:** `cell_index` (0-based, -1=append), `cell_type` (code/markdown), `cell_source`
+
+**Returns:** Success message with surrounding cell structure.
+
+---
+
+#### `jupyter:overwrite_cell_source`
+**Purpose:** Replace the entire content of an existing cell.
+
+**Parameters:** `cell_index` (0-based), `cell_source` (complete new content)
+
+**Returns:** Diff-style comparison (+ for additions, - for deletions).
+
+---
+
+#### `jupyter:execute_cell`
+**Purpose:** Run a specific cell and return its outputs.
+
+**Parameters:** `cell_index` (0-based), `timeout` (default: 90), `stream` (for long tasks)
+
+**Returns:** Cell outputs (text, HTML, images, errors).
+
+---
+
+#### `jupyter:insert_execute_code_cell` ⭐ PREFERRED
+**Purpose:** Insert a code cell AND execute it immediately (preferred over separate calls).
+
+**Parameters:** `cell_index` (-1=append), `cell_source`, `timeout`
+
+**Returns:** Both insertion confirmation and execution outputs.
+
+---
+
+#### `jupyter:read_cell`
+**Purpose:** Read a single cell with metadata and outputs.
+
+**Parameters:** `cell_index` (0-based), `include_outputs` (default: true)
+
+**Returns:** Cell metadata, source, and outputs (if applicable).
+
+---
+
+#### `jupyter:delete_cell`
+**Purpose:** Delete one or more cells.
+
+**Parameters:** `cell_indices` (list of 0-based positions), `include_source` (default: true)
+
+**CRITICAL:** Delete in DESCENDING order to prevent index shifting.
+
+---
+
+#### `jupyter:execute_code`
+**Purpose:** Execute code in kernel WITHOUT saving to notebook.
+
+**When to use:** Magic commands (`%timeit`, `%pip`), shell commands (`!git`), debugging, profiling.
+
+**Parameters:** `code` (required), `timeout` (default: 30, max: 60)
+
+**Examples:** `%pip install pandas`, `!git status`, `print(df.head())`
+
+---
+
+## Mandatory Operating Sequences
+
+For reliable notebook operations, always follow these sequences:
+
+### Sequence 1: Inspect a notebook
+```
+1. jupyter:list_files           → Find the notebook file
+2. jupyter:use_notebook         → Activate it (REQUIRED)
+3. jupyter:list_notebooks       → Confirm activation
+4. jupyter:read_notebook        → Inspect cells and structure
 ```
 
-**Rebuild fails with permission errors.**
-The `rebuild.sh` script requires `sudo` for some steps. Make sure your user account has sudo privileges.
+### Sequence 2: Modify an existing cell
+```
+1. jupyter:use_notebook         → Ensure correct notebook is active
+2. jupyter:read_notebook        → Find exact cell index
+3. jupyter:overwrite_cell_source → Replace cell content
+4. jupyter:execute_cell         → Run the updated cell (optional)
+```
 
-**Notebook operations fail even though the file exists.**
-The AI needs to explicitly *open* a notebook before it can read or edit its cells. If something feels stuck, ask the AI to "re-open the notebook" or restart the kernel.
+### Sequence 3: Add and run code (preferred)
+```
+1. jupyter:use_notebook              → Activate notebook
+2. jupyter:insert_execute_code_cell  → Insert and run simultaneously
+```
 
-**JupyterLab logs.**
-If something isn't working as expected, you can inspect the logs:
+### Sequence 4: Delete cells safely
+```
+1. jupyter:use_notebook    → Activate notebook
+2. jupyter:read_notebook   → Identify exact indices
+3. jupyter:delete_cell     → Delete in DESCENDING index order ONLY
+```
+
+### Sequence 5: Run temporary code
+```
+1. jupyter:use_notebook → Activate notebook
+2. jupyter:execute_code → Run code without saving to notebook
+```
+
+### Sequence 6: Switch servers
+```
+1. jupyter:connect_to_jupyter → Connect to new server
+2. jupyter:list_files         → Verify access to files
+3. jupyter:use_notebook       → Activate notebook on new server
+```
+
+**Critical Rules:**
+- ALWAYS call `jupyter:use_notebook` first before ANY cell operations
+- ALWAYS delete cells in DESCENDING index order
+- ALWAYS use 0-based indexing (first cell = 0, not 1)
+- ALWAYS use `jupyter:insert_execute_code_cell` when inserting and running together
+
+---
+
+## Troubleshooting & Common Issues
+
+### Connection Issues
+
+**The AI says it can't reach Jupyter.**
+
+Make sure:
+1. You've run `./start_jpy.sh`
+2. Both JupyterLab (port 8888) and jupyter-mcp-server (port 4040) are running
+
+Test connectivity:
+```bash
+curl http://127.0.0.1:4040
+curl http://127.0.0.1:8888
+```
+
+If either fails, check the logs:
 ```bash
 cat /tmp/jupyterlab.log
 cat /tmp/jupytermcp.log
 ```
+
+---
+
+### Permission & Build Issues
+
+**Rebuild fails with permission errors.**
+
+The `install.sh` script requires `sudo` for some steps. Make sure your user account has sudo privileges.
+
+---
+
+### Cell Operation Failures
+
+**"Field required" or schema validation error**
+
+You're using an incorrect parameter name. Check the tool documentation:
+- Use `cell_source` (not `source`)
+- Use `cell_index` (not `index`)
+- Use `cell_indices` for delete (not `cell_index`)
+- Use colon format: `jupyter:tool_name` (not `jupyter_tool_name`)
+
+---
+
+**Notebook operations fail even though the file exists**
+
+You MUST explicitly open a notebook before operating on its cells:
+1. Call `jupyter:use_notebook` with the notebook path and name
+2. Call `jupyter:list_notebooks` to confirm activation
+3. Then perform cell operations
+
+The server cannot read or edit cells in a notebook that hasn't been activated.
+
+---
+
+**"Notebook not found" error**
+
+Diagnostic sequence:
+```
+1. jupyter:list_files            → Confirm notebook file exists on disk
+2. jupyter:use_notebook          → Activate the notebook
+3. jupyter:list_notebooks        → Verify active notebook state
+4. jupyter:read_notebook         → Confirm server has valid handle
+```
+
+This separates "file exists on disk" from "server has active handle."
+
+---
+
+**Cell index errors**
+
+Remember:
+- Cell indices are **0-based** (first cell = 0, not 1)
+- Use `cell_index: -1` to append at the end
+- When deleting multiple cells, use **descending order** to prevent index shifting
+
+Example: Delete cells [5, 3, 1] in that order, NOT [1, 3, 5].
+
+---
+
+**Long-running cell hangs**
+
+Use the `timeout` parameter to set maximum execution time:
+```
+jupyter:execute_cell with timeout: 120
+```
+
+Or enable streaming for progress updates:
+```
+jupyter:execute_cell with stream: true, progress_interval: 5
+```
+
+---
+
+### Debugging
+
+**View logs for detailed error information:**
+```bash
+tail -f /tmp/jupyterlab.log        # JupyterLab activity
+tail -f /tmp/jupytermcp.log        # Bridge server activity
+```
+
+**Check running processes:**
+```bash
+ps aux | grep jupyter
+```
+
+**Verify server endpoints are accessible:**
+```bash
+curl -v http://127.0.0.1:4040/health
+curl -v http://127.0.0.1:8888/lab
+```
+
+**Restart everything fresh:**
+```bash
+./stop_jpy.sh
+sleep 2
+./start_jpy.sh
+```
+
+---
+
+## Advanced Configuration
+
+For most users, the defaults work fine. But if you need custom settings, you can configure ClawPyter in OpenClaw:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `baseUrl` | `http://127.0.0.1:4040` | Address of jupyter-mcp-server |
+| `authToken` | _(none)_ | Authentication token if your server requires one |
+| `defaultNotebook` | _(none)_ | A notebook path to open automatically |
+| `timeoutMs` | `30000` | How long (milliseconds) to wait for responses |
+
+Example (if needed): Set `defaultNotebook` to `analysis.ipynb` to always open that notebook on startup.
 
 ---
 
@@ -240,18 +535,57 @@ cat /tmp/jupytermcp.log
 ```
 clawpyter/
 ├── src/
-│   ├── index.ts                # Plugin entry point — registers all 15 tools with OpenClaw
-│   └── jupyter-mcp-client.ts   # HTTP client that talks to jupyter-mcp-server
+│   ├── index.ts                # Plugin entry point
+│   │                           # Registers all 18 tools (15 core + 3 compat)
+│   │                           # Maps OpenClaw API to jupyter-mcp-server
+│   └── jupyter-mcp-client.ts   # HTTP client for server communication
+│
 ├── skills/
 │   └── ClawPyter/
-│       └── SKILL.md            # Instructions that teach the AI how to use these tools
-├── openclaw.plugin.json        # Plugin metadata and configuration schema
-├── package.json                # Node.js project definition
+│       └── SKILL.md            # Comprehensive skill instructions
+│                               # Teaches AI how, when, and why to use tools
+│                               # Mandatory operating sequences
+│                               # Diagnostic troubleshooting procedures
+│
+├── docs/
+│   └── _static/
+│       └── clawpyter.png       # Architecture diagram
+│
+├── openclaw.plugin.json        # Plugin metadata and configuration
+├── package.json                # Node.js dependencies and scripts
 ├── tsconfig.json               # TypeScript compiler settings
-├── install.sh                  # Build and install script
-├── start_jpy.sh                # Start JupyterLab + bridge server
-└── stop_jpy.sh                 # Stop JupyterLab + bridge server
+├── build.sh                    # Compile TypeScript to JavaScript
+├── install.sh                  # Build and install into OpenClaw
+├── start_jpy.sh                # Launch JupyterLab + mcp-server
+├── stop_jpy.sh                 # Stop JupyterLab + mcp-server
+├── README.md                   # This file
+└── LICENSE                     # MIT License
 ```
+
+### Key Files Explained
+
+**`src/index.ts`** — The plugin's main entry point. Defines all 18 tools with:
+- OpenClaw tool names (`jupyter:*` format)
+- Parameter specifications and validation
+- Description text for the AI
+- Translation logic between OpenClaw and jupyter-mcp-server formats
+
+**`skills/ClawPyter/SKILL.md`** — The AI's operating manual. Contains:
+- Detailed instructions for each tool
+- Mandatory operating sequences with step-by-step procedures
+- Critical rules and constraints
+- Troubleshooting diagnostics for common failures
+- Context-dependent design explanation
+
+**`openclaw.plugin.json`** — Plugin metadata:
+- Tool descriptions and names
+- Configuration schema for optional settings
+- Version and author information
+
+**`start_jpy.sh` and `stop_jpy.sh`** — Control scripts:
+- Start: Launches JupyterLab (port 8888) and jupyter-mcp-server (port 4040)
+- Stop: Gracefully shut down both services
+- Always run these before/after using ClawPyter
 
 ---
 
@@ -267,9 +601,39 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ---
 
-## Credits
+## Reference: MCP Server Specification
+
+ClawPyter implements the **[jupyter-mcp-server](https://github.com/anthropics/jupyter-mcp-server)** specification:
+
+| Category | Core Tools | Compatibility Wrappers | Total |
+|---|:---:|:---:|:---:|
+| Server Management | 3 | 0 | 3 |
+| Notebook Management | 5 | 3 | 8 |
+| Cell Operations | 7 | 0 | 7 |
+| **Total** | **15** | **3** | **18** |
+
+All parameter names, types, requirements, and return values strictly follow the upstream reference. For complete technical documentation, see the [jupyter-mcp-server GitHub repository](https://github.com/anthropics/jupyter-mcp-server).
+
+---
+
+## Credits & Dependencies
 
 ClawPyter integrates with:
-- [OpenClaw](https://openclaw.ai) — the AI agent platform this plugin extends
-- [JupyterLab](https://jupyter.org) — the interactive notebook environment
-- [jupyter-mcp-tools](https://pypi.org/project/jupyter-mcp-tools/) — the Jupyter MCP server that bridges AI and Jupyter
+
+- **[OpenClaw](https://openclaw.ai)** — the AI agent platform this plugin extends
+- **[JupyterLab 4.4.1](https://jupyter.org)** — the interactive notebook environment
+- **[jupyter-mcp-server](https://github.com/anthropics/jupyter-mcp-server)** — the Model Context Protocol bridge between AI and Jupyter
+- **[jupyter-mcp-tools](https://pypi.org/project/jupyter-mcp-tools/)** — JupyterLab integration commands
+- **[jupyter-collaboration 4.0.2](https://github.com/jupyter-server/jupyter_collaboration)** — Real-time collaborative features
+
+---
+
+## Next Steps
+
+1. **Install:** Run `./install.sh` to build and install the plugin
+2. **Start:** Run `./start_jpy.sh` to launch Jupyter and the bridge server
+3. **Explore:** Check `skills/ClawPyter/SKILL.md` for detailed operating instructions
+4. **Use:** Open OpenClaw and start working with notebooks through the AI
+5. **Stop:** Run `./stop_jpy.sh` when done
+
+For questions or issues, refer to the Troubleshooting section above or check the logs in `/tmp/`.

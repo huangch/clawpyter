@@ -59,7 +59,7 @@ export default function register(api: any) {
 
   const client = new JupyterMcpClient(
     effectiveBaseUrl,
-    cfg.authToken,
+    // cfg.authToken,
     effectiveTimeoutMs,
   );
 
@@ -68,7 +68,7 @@ export default function register(api: any) {
       openclawName: "jupyter_list_files",
       mcpName: "list_files",
       description:
-        "List files and directories recursively in the Jupyter server file system. Use this to explore the server-side filesystem, find notebooks, confirm whether a notebook file exists, or inspect directory structure before activating a notebook. Supports pagination and glob filtering. Example arguments: { path: '', max_depth: 1, start_index: 0, limit: 25, pattern: '*.ipynb' }.",
+        "List all files and directories recursively in the Jupyter server's file system. Used to explore the file system structure of the Jupyter server or to find specific files or directories. Returns tab-separated table with columns: Path, Type, Size, Last_Modified. Supports pagination and glob pattern filtering.",
       parameters: Type.Object({
         path: Type.Optional(Type.String()),
         max_depth: Type.Optional(Type.Integer({ minimum: 0, maximum: 3 })),
@@ -89,7 +89,7 @@ export default function register(api: any) {
       openclawName: "jupyter_list_kernels",
       mcpName: "list_kernels",
       description:
-        "List all available and running Jupyter kernels, including kernel ID, name, display name, language, state, connection count, last activity, and kernel environment information. Use this to inspect kernel state, identify a kernel for notebook attachment, or debug server-side execution state.",
+        "List all available kernels in the Jupyter server. This tool shows all running and available kernel sessions on the Jupyter server, including their IDs, names, states, connection information, and kernel specifications. Useful for monitoring kernel resources and identifying specific kernels for connection. Returns tab-separated table with columns: ID, Name, Display_Name, Language, State, Connections, Last_Activity, Environment.",
       parameters: Type.Object({}),
       buildArgs: () => ({}),
       title: () => "Jupyter kernels",
@@ -98,7 +98,7 @@ export default function register(api: any) {
       openclawName: "jupyter_connect_to_jupyter",
       mcpName: "connect_to_jupyter",
       description:
-        "Connect to a different Jupyter server dynamically without restarting the integration. Use this when switching to another Jupyter URL or token during a session. Note: this tool is NOT available when running the MCP server as a Jupyter server extension — use pre-configured connection details in that case. Example arguments: { jupyter_url: 'http://127.0.0.1:8888', jupyter_token: '...', provider: 'jupyter' }.",
+        "Connect to a Jupyter server dynamically with URL and token. This tool allows you to connect to different Jupyter servers without needing to restart the MCP server or modify configuration files. Not available when running MCP server as a Jupyter extension; use pre-configured connection details in that case. Returns connection status message confirming successful connection.",
       parameters: Type.Object({
         jupyter_url: Type.String(),
         jupyter_token: Type.Optional(Type.String()),
@@ -116,26 +116,19 @@ export default function register(api: any) {
       openclawName: "jupyter_use_notebook",
       mcpName: "use_notebook",
       description:
-        "Activate or connect to a notebook so later cell operations target it. This is the first notebook-specific tool to call before reading, inserting, overwriting, executing, or deleting cells. Both notebook_path and notebook_name are required by the upstream server: notebook_path is the file path relative to the Jupyter server root, and notebook_name is a unique session identifier. When notebook_name is not explicitly provided, this wrapper uses notebook_path as the identifier. Advanced inputs: mode as 'connect' or 'create', and optional kernel_id to attach a specific kernel. Example arguments: { notebook_path: 'Untitled.ipynb', notebook_name: 'Untitled', mode: 'connect' }.",
+        "Use a notebook and activate it for following cell operations. Provide notebook_name as a unique identifier for the notebook and notebook_path as the file path relative to the Jupyter server root. Select mode: 'connect' to connect to existing notebook or 'create' to create new notebook (default: 'connect'). Optionally specify kernel_id to attach a specific kernel. Returns success message with notebook information including activation status, kernel details, and notebook overview.",
       parameters: Type.Object({
-        notebook_path: Type.Optional(Type.String()),
-        notebook_name: Type.Optional(Type.String()),
+        notebook_path: Type.String(),
+        notebook_name: Type.String(),
         mode: Type.Optional(
           Type.Union([Type.Literal("connect"), Type.Literal("create")]),
         ),
         kernel_id: Type.Optional(Type.String()),
       }),
-      buildArgs: (params, cfg) => {
-        const notebookPath = requireNotebookPath(params, cfg);
-        // Fix: fall back to notebookPath as the identifier rather than empty string,
-        // because the upstream server requires a non-empty notebook_name.
-        const notebookName =
-          typeof params.notebook_name === "string" && (params.notebook_name as string).trim()
-            ? (params.notebook_name as string)
-            : notebookPath;
+      buildArgs: (params) => {
         return {
-          notebook_name: notebookName,
-          notebook_path: notebookPath,
+          notebook_name: params.notebook_name,
+          notebook_path: params.notebook_path,
           mode: params.mode ?? "connect",
           kernel_id: params.kernel_id,
         };
@@ -146,7 +139,7 @@ export default function register(api: any) {
       openclawName: "jupyter_list_notebooks",
       mcpName: "list_notebooks",
       description:
-        "List all notebooks that have been activated or used through notebook activation. Returns notebook name, path, kernel ID, kernel status, and whether the notebook is currently active. Use this to inspect notebook session state after activating or switching notebooks.",
+        "List all notebooks that have been used via use_notebook tool. Returns TSV formatted table with notebook information: Name (unique identifier), Path (file path), Kernel_ID (associated kernel), Kernel_Status (kernel status), and Activate (✓ if currently active). Use this to inspect notebook session state after activating or switching notebooks.",
       parameters: Type.Object({}),
       buildArgs: () => ({}),
       title: () => "Jupyter notebooks",
@@ -155,7 +148,21 @@ export default function register(api: any) {
       openclawName: "jupyter_restart_notebook",
       mcpName: "restart_notebook",
       description:
-        "Restart the kernel for a specific activated notebook and clear its memory state. Requires notebook_name, which is the notebook identifier reported by list_notebooks. If notebook_name is not supplied, this wrapper falls back to notebook_path/default notebook for compatibility. Example arguments: { notebook_name: 'default' }.",
+        "Restart the kernel for a specific notebook. Requires notebook_name (notebook identifier as reported by list_notebooks). Returns success message confirming the kernel has been restarted and memory state cleared.",
+      parameters: Type.Object({
+        notebook_name: Type.String(),
+      }),
+      buildArgs: (params) => ({
+        notebook_name: params.notebook_name,
+      }),
+      title: (params) =>
+        `Restart notebook: ${String(params.notebook_name ?? "")}`,
+    },
+    {
+      openclawName: "jupyter_restart_notebook_compat",
+      mcpName: "restart_notebook",
+      description:
+        "(Compatibility wrapper) Restart the kernel for a specific notebook. Accepts either notebook_name or notebook_path. If notebook_name is not supplied, falls back to notebook_path for compatibility.",
       parameters: Type.Object({
         notebook_name: Type.Optional(Type.String()),
         notebook_path: Type.Optional(Type.String()),
@@ -170,7 +177,21 @@ export default function register(api: any) {
       openclawName: "jupyter_unuse_notebook",
       mcpName: "unuse_notebook",
       description:
-        "Disconnect from a specific activated notebook and release its resources. Requires notebook_name, which is the notebook identifier reported by list_notebooks. If notebook_name is not supplied, this wrapper falls back to notebook_path/default notebook for compatibility.",
+        "Unuse from a specific notebook and release its resources. Requires notebook_name (notebook identifier as reported by list_notebooks). Returns success message confirming the notebook has been disconnected and resources released.",
+      parameters: Type.Object({
+        notebook_name: Type.String(),
+      }),
+      buildArgs: (params) => ({
+        notebook_name: params.notebook_name,
+      }),
+      title: (params) =>
+        `Unuse notebook: ${String(params.notebook_name ?? "")}`,
+    },
+    {
+      openclawName: "jupyter_unuse_notebook_compat",
+      mcpName: "unuse_notebook",
+      description:
+        "(Compatibility wrapper) Unuse from a specific notebook and release its resources. Accepts either notebook_name or notebook_path. If notebook_name is not supplied, falls back to notebook_path for compatibility.",
       parameters: Type.Object({
         notebook_name: Type.Optional(Type.String()),
         notebook_path: Type.Optional(Type.String()),
@@ -185,7 +206,29 @@ export default function register(api: any) {
       openclawName: "jupyter_read_notebook",
       mcpName: "read_notebook",
       description:
-        "Read an activated notebook and return each cell's index, source, type, and execution count. Use response_format='brief' for a compact overview and response_format='detailed' for full cell source. Supports pagination with start_index and limit. Requires notebook_name, which is the notebook identifier reported by list_notebooks. If notebook_name is not supplied, this wrapper falls back to notebook_path/default notebook for compatibility. Recommended workflow: activate notebook first, read in brief mode to locate cells, then read in detailed mode for exact cells. Example arguments: { notebook_name: 'default', response_format: 'brief', start_index: 0, limit: 20 }.",
+        "Read a notebook and return index, source content, type, execution count of each cell. Using brief format returns first line and line count (useful for quick overview), detailed format returns full cell source (useful for debugging). Recommended workflow: use brief format with larger limit to get overview, then use detailed format with exact index and limit for specific cells. Returns notebook content with cell details, metadata, and pagination information.",
+      parameters: Type.Object({
+        notebook_name: Type.String(),
+        response_format: Type.Optional(
+          Type.Union([Type.Literal("brief"), Type.Literal("detailed")]),
+        ),
+        start_index: Type.Optional(Type.Integer({ minimum: 0 })),
+        limit: Type.Optional(Type.Integer({ minimum: 0 })),
+      }),
+      buildArgs: (params) => ({
+        notebook_name: params.notebook_name,
+        response_format: params.response_format ?? "brief",
+        start_index: params.start_index ?? 0,
+        limit: params.limit ?? 20,
+      }),
+      title: (params) =>
+        `Read notebook: ${String(params.notebook_name ?? "")}`,
+    },
+    {
+      openclawName: "jupyter_read_notebook_compat",
+      mcpName: "read_notebook",
+      description:
+        "(Compatibility wrapper) Read a notebook. Accepts either notebook_name or notebook_path. If notebook_name is not supplied, falls back to notebook_path for compatibility.",
       parameters: Type.Object({
         notebook_name: Type.Optional(Type.String()),
         notebook_path: Type.Optional(Type.String()),
@@ -208,7 +251,7 @@ export default function register(api: any) {
       openclawName: "jupyter_insert_cell",
       mcpName: "insert_cell",
       description:
-        "Insert a code or markdown cell into the currently activated notebook. Operates on the active notebook only; do not pass notebook arguments here. Requires cell_index, cell_type, and cell_source. Use cell_index = -1 to append at the end. Example arguments: { cell_index: -1, cell_type: 'code', cell_source: 'print(1+1)' }.",
+        "Insert a cell to specified position from the currently activated notebook. Requires cell_index (0-based, use -1 to append at end), cell_type ('code' or 'markdown'), and cell_source (cell content). Returns success message with insertion confirmation and structure of surrounding cells (up to 5 cells above and below).",
       parameters: Type.Object({
         cell_index: Type.Integer({ minimum: -1 }),
         cell_type: Type.Union([
@@ -228,7 +271,7 @@ export default function register(api: any) {
       openclawName: "jupyter_overwrite_cell_source",
       mcpName: "overwrite_cell_source",
       description:
-        "Overwrite the entire source content of a specific cell in the currently activated notebook. Operates on the active notebook only. Requires cell_index and cell_source. Returns a diff-style comparison of the change. Example arguments: { cell_index: 0, cell_source: 'print(42)' }.",
+        "Overwrite the source of a specific cell from the currently activated notebook. Returns diff style comparison (+ for new lines, - for deleted lines) of the cell's content. Requires cell_index (0-based) and cell_source (new complete cell source).",
       parameters: Type.Object({
         cell_index: Type.Integer({ minimum: 0 }),
         cell_source: Type.String(),
@@ -243,7 +286,7 @@ export default function register(api: any) {
       openclawName: "jupyter_execute_cell",
       mcpName: "execute_cell",
       description:
-        "Execute a specific cell in the currently activated notebook and return its outputs. Operates on the active notebook only. Requires cell_index. Optional timeout controls maximum wait time. Optional stream and progress_interval enable progress updates for long-running execution. Example arguments: { cell_index: 0, timeout: 90, stream: false }.",
+        "Execute a cell from the currently activated notebook with timeout and return its outputs. Requires cell_index (0-based). Optional timeout (default: 90 seconds) controls maximum wait. Optional stream (default: false) enables streaming progress updates; progress_interval (default: 5 seconds) controls update frequency for long-running cells. Returns list of outputs including text, HTML, and images.",
       parameters: Type.Object({
         cell_index: Type.Integer({ minimum: 0 }),
         timeout: Type.Optional(Type.Integer({ minimum: 1 })),
@@ -262,7 +305,7 @@ export default function register(api: any) {
       openclawName: "jupyter_insert_execute_code_cell",
       mcpName: "insert_execute_code_cell",
       description:
-        "Insert a new code cell into the currently activated notebook and execute it immediately. This is the preferred shortcut when you want to both add and run a saved code cell in one step. Operates on the active notebook only. Requires cell_index and cell_source. Optional timeout controls execution wait time. Example arguments: { cell_index: -1, cell_source: 'print(1+1)', timeout: 90 }.",
+        "Insert a cell at specified index from the currently activated notebook and then execute it. This is the preferred shortcut when you want to insert a cell and execute it at the same time. Requires cell_index (0-based, -1 to append) and cell_source (code). Optional timeout (default: 90 seconds) controls execution wait. Returns both insertion confirmation and execution results including outputs.",
       parameters: Type.Object({
         cell_index: Type.Integer({ minimum: -1 }),
         cell_source: Type.String(),
@@ -280,7 +323,7 @@ export default function register(api: any) {
       openclawName: "jupyter_read_cell",
       mcpName: "read_cell",
       description:
-        "Read a specific cell from the currently activated notebook and return its metadata, full source, and optionally outputs. Operates on the active notebook only. Requires cell_index. Optional include_outputs defaults to true and only affects code cells. Example arguments: { cell_index: 0, include_outputs: true }.",
+        "Read a specific cell from the currently activated notebook and return its metadata (index, type, execution count), source and outputs (for code cells). Requires cell_index (0-based). Optional include_outputs (default: true) includes outputs for code cells only. Returns list containing cell metadata, source code, and outputs (if applicable).",
       parameters: Type.Object({
         cell_index: Type.Integer({ minimum: 0 }),
         include_outputs: Type.Optional(Type.Boolean()),
@@ -295,7 +338,7 @@ export default function register(api: any) {
       openclawName: "jupyter_delete_cell",
       mcpName: "delete_cell",
       description:
-        "Delete one or more cells from the currently activated notebook. Operates on the active notebook only. Requires cell_indices as a list of cell indices. Optional include_source controls whether deleted cell source is returned. When deleting many cells, delete them in descending index order to avoid index shifting. Example arguments: { cell_indices: [3, 2, 1], include_source: true }.",
+        "Delete a specific cell or multiple cells from the currently activated notebook. Requires cell_indices (list of 0-based indices). Optional include_source (default: true) includes the source code of deleted cells. IMPORTANT: When deleting many cells, delete them in descending order of their index to avoid index shifting. Returns success message with deletion confirmation and source code of deleted cells (if include_source=true).",
       parameters: Type.Object({
         cell_indices: Type.Array(Type.Integer({ minimum: 0 })),
         include_source: Type.Optional(Type.Boolean()),
@@ -310,7 +353,7 @@ export default function register(api: any) {
       openclawName: "jupyter_execute_code",
       mcpName: "execute_code",
       description:
-        "Execute code directly in the kernel of the currently activated notebook without saving it as a notebook cell. Use this for magic commands, shell commands, quick tests, temporary calculations, performance profiling, debugging, and inspecting intermediate values. Do not use it to import new modules or perform variable assignments that affect subsequent notebook execution, run dangerous code without permission, or silently replace proper notebook edits when the user explicitly wants the notebook changed. Operates on the active notebook only. Requires code. Optional timeout defaults to 30 seconds, maximum 60 seconds. Example arguments: { code: '%timeit sum(range(1000))', timeout: 30 }.",
+        "Execute code directly in the kernel (not saved to notebook) on the current activated notebook. Support magic commands with % and shell commands with !. Recommended for: executing Jupyter magic commands (%timeit, %pip install), performance profiling and debugging, viewing intermediate variable values, temporary calculations, shell commands. Do NOT use for: importing modules or variable assignments affecting subsequent execution, executing dangerous code without permission, replacing proper notebook edits. Requires code. Optional timeout (default: 30, max: 60 seconds). Returns list of outputs including text, HTML, images, and shell command results.",
       parameters: Type.Object({
         code: Type.String(),
         timeout: Type.Optional(Type.Integer({ minimum: 1, maximum: 60 })),
