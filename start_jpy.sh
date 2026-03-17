@@ -40,6 +40,8 @@ uvx jupyter-mcp-server start \
 
 echo $! > /tmp/jupytermcp.pid
 
-echo \""jupyterUrl"\": \""http://$JUPYTER_IP:8888"\",
-echo \""jupyterToken"\": \""$JUPYTER_TOKEN"\",
-echo \""notebookDir"\": \""$NOTEBOOK_DIR"\"
+echo "        \"config\": {"
+echo "          \"jupyterUrl\": \"http://$JUPYTER_IP:8888\","
+echo "          \"jupyterToken\": \"$JUPYTER_TOKEN\","
+echo "          \"notebookDir\": \"$NOTEBOOK_DIR\""
+echo "        }"   
