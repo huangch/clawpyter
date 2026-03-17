@@ -7,8 +7,9 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "baseUrl": { "type": "string" },
-      "authToken": { "type": "string" },
+      "mcpUrl": { "type": "string" },
+      "jupyterToken": { "type": "string" },
+      "jupyterUrl": { "type": "string" },
       "defaultNotebook": { "type": "string" },
       "timeoutMs": { "type": "number" }
     }

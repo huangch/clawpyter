@@ -21,7 +21,7 @@ export default function register(api) {
     const jupyter_url = cfg.jupyterUrl ?? "http://127.0.0.1:8888";
     const jupyter_token = cfg.jupyterToken ?? "";
     const timeout_ms = cfg.timeoutMs ?? 30000;
-    const client = new JupyterMcpClient(mcp_url, jupyter_url, jupyter_token, timeout_ms);
+    const client = new JupyterMcpClient(mcp_url, timeout_ms);
     const toolDefs = [
         {
             openclawName: "jupyter_list_files",

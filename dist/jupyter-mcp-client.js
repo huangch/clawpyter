@@ -1,12 +1,8 @@
 export class JupyterMcpClient {
     mcpUrl;
-    jupyterUrl;
-    jupyterToken;
     timeoutMs;
-    constructor(mcpUrl, jupyterUrl, jupyterToken, timeoutMs = 30000) {
+    constructor(mcpUrl, timeoutMs = 30000) {
         this.mcpUrl = mcpUrl;
-        this.jupyterUrl = jupyterUrl;
-        this.jupyterToken = jupyterToken;
         this.timeoutMs = timeoutMs;
     }
     async post(path, body) {
