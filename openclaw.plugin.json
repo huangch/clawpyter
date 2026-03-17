@@ -7,12 +7,12 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "mcpUrl": { "type": "string" },
-      "jupyterToken": { "type": "string" },
-      "jupyterUrl": { "type": "string" },
-      "notebookDir": { "type": "string" },
-      "defaultNotebook": { "type": "string" },
-      "timeoutMs": { "type": "number" }
+      "mcpUrl": { "type": "string", "description": "URL of the MCP (Model Context Protocol) server that bridges OpenClaw to Jupyter. Default: http://127.0.0.1:4040. Typically started via start_jpy.sh script."  },
+      "jupyterToken": { "type": "string", "description": "Authentication token for the Jupyter server. Generated automatically by start_jpy.sh and saved in environment. Required for secure access to the Jupyter server."  },
+      "jupyterUrl": { "type": "string", "description": "URL of the Jupyter Lab server. Default: http://127.0.0.1:8888. Used to construct notebook access URLs and verify connectivity."  },
+      "notebookDir": { "type": "string", "description": "Physical directory path where notebooks are stored on the Jupyter server. Used with defaultNotebook to auto-increment notebook names (e.g., ~/.openclaw/jupyter_home). Relative paths are resolved from Jupyter root."  },
+      "defaultNotebook": { "type": "string", "description": "Default notebook name used when creating new notebooks without explicit path. Defaults to 'Untitled' if not specified. Auto-increments to Untitled-1, Untitled-2, etc. if files exist."  },
+      "timeoutMs": { "type": "number", "description": "Request timeout in milliseconds for Jupyter operations. Default: 30000 (30 seconds). Increase for slow networks or long-running operations."  }
     }
   }
 }
