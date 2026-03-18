@@ -22,6 +22,82 @@ export default function register(api) {
     const jupyter_token = cfg.jupyterToken ?? "";
     const timeout_ms = cfg.timeoutMs ?? 30000;
     const client = new JupyterMcpClient(mcp_url, timeout_ms);
+    // Helper: Construct a full Jupyter Lab URL with authentication token
+    function buildLabUrl(notebookPath) {
+        const cleanPath = notebookPath.replace(/^\/+/, "");
+        return `${jupyter_url}/lab/tree/${cleanPath}?token=${jupyter_token}`;
+    }
+    // Helper: Resolve notebook name for creation with conflict detection
+    async function resolveNewNotebookName(explicitName, cfg) {
+        // Use explicit name if provided, otherwise use defaultNotebook, fallback to "Untitled"
+        let baseName = explicitName || cfg.defaultNotebook || "Untitled";
+        // Ensure .ipynb extension
+        if (!baseName.endsWith(".ipynb")) {
+            baseName += ".ipynb";
+        }
+        // Check for file conflicts by listing files
+        const listResponse = await client.callTool("list_files", {
+            path: "",
+            max_depth: 1,
+            pattern: baseName.replace(".ipynb", "") + "*",
+        });
+        // Parse the response to extract file names
+        const result = JupyterMcpClient.unwrap(listResponse);
+        const lines = (typeof result === "string" ? result : JSON.stringify(result) || "")
+            .split("\n");
+        const existingFiles = new Set();
+        for (const line of lines) {
+            if (line.trim()) {
+                const parts = line.split("\t");
+                if (parts.length > 0) {
+                    existingFiles.add(parts[0]);
+                }
+            }
+        }
+        // If baseName doesn't exist, use it
+        if (!existingFiles.has(baseName)) {
+            return baseName;
+        }
+        // Otherwise, find the next available numbered version
+        const baseWithoutExt = baseName.replace(".ipynb", "");
+        let counter = 1;
+        while (true) {
+            const candidateName = `${baseWithoutExt}-${counter}.ipynb`;
+            if (!existingFiles.has(candidateName)) {
+                return candidateName;
+            }
+            counter++;
+        }
+    }
+    api.registerTool({
+        name: "jupyter_create_notebook",
+        description: "Create a new notebook with automatic name conflict detection. If no notebook name is provided, uses defaultNotebook from config or 'Untitled'. If the notebook file already exists, automatically appends a number suffix (-1, -2, etc.) until a unique name is found. Returns success message with the created notebook name and access URL.",
+        parameters: Type.Object({
+            notebook_name: Type.Optional(Type.String()),
+        }),
+        async execute(_id, params) {
+            console.log("Tool execution:", {
+                name: "jupyter_create_notebook",
+                params,
+                _id,
+            });
+            const explicitName = typeof params.notebook_name === "string"
+                ? params.notebook_name
+                : undefined;
+            const resolvedNotebookName = await resolveNewNotebookName(explicitName, cfg);
+            // Create and activate the notebook
+            const response = await client.callTool("use_notebook", {
+                notebook_path: resolvedNotebookName,
+                notebook_name: resolvedNotebookName,
+                mode: "create",
+            });
+            const result = JupyterMcpClient.unwrap(response);
+            const url = buildLabUrl(resolvedNotebookName);
+            const message = `Notebook **${resolvedNotebookName}** created successfully.\n\nAccess URL:\n${url}`;
+            console.log("Tool result:", { _id, name: "jupyter_create_notebook", result });
+            return JupyterMcpClient.asToolText("Notebook created", message);
+        },
+    }, { optional: true });
     api.registerTool({
         name: "jupyter_server_info",
         description: "Retrieve current configuration settings for both Jupyter server and MCP server. Returns the effective connection parameters and timeouts including: Jupyter server URL (jupyter_url) and Jupyter authentication token (jupyter_token). Use this tool to verify server connectivity details, construct notebook URLs, or diagnose connection issues.",

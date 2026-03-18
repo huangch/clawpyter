@@ -17,8 +17,9 @@ ClawPyter provides three mandatory tool categories (16 core tools + 3 compatibil
 - `jupyter_connect_to_jupyter`
 - `jupyter_server_info`
 
-**Notebook Management (5 tools + 3 compatibility wrappers)** — MUST use before all cell operations
-- `jupyter_use_notebook` (REQUIRED first step)
+**Notebook Management (6 tools + 3 compatibility wrappers)** — MUST use before all cell operations
+- `jupyter_create_notebook` (Use when user wants to create a new notebook)
+- `jupyter_use_notebook` (REQUIRED first step for existing notebooks)
 - `jupyter_list_notebooks`
 - `jupyter_restart_notebook` / `jupyter_restart_notebook_compat`
 - `jupyter_unuse_notebook` / `jupyter_unuse_notebook_compat`
@@ -172,12 +173,46 @@ When providing users with URLs to access notebooks, ALWAYS include the authentic
 - Troubleshooting authentication or timeout issues
 
 **Example workflow:**
-1. Call `jupyter_server_info` to get `jupyter_url` and `jupyterToken`
-2. Call `jupyter_create_notebook` to create a new notebook
-3. Construct the URL: `{jupyter_url}/lab/tree/{notebook_path}?token={jupyterToken}`
-4. Provide this complete URL to the user for notebook access
+1. Call `jupyter_create_notebook` (it automatically handles URL construction)
+2. The tool returns both the resolved notebook name and complete authenticated URL
+3. Provide the returned URL directly to the user
+
+Note: `jupyter_create_notebook` internals use `jupyter_server_info` to fetch the credentials and `list_files` to detect conflicts, so users don't need to manually handle these steps.
 
 ## Notebook Management Tools — MANDATORY before all cell operations
+
+### `jupyter_create_notebook`
+**PURPOSE:** Create a new notebook with automatic filename conflict detection.
+
+**AUTOMATIC NAMING LOGIC (when user doesn't specify name):**
+1. Use `notebook_name` if provided explicitly
+2. Fall back to `defaultNotebook` from plugin config if not provided
+3. Fall back to `"Untitled"` if config has no default
+4. **Conflict detection:** If the target filename exists, automatically append suffix:
+   - First conflict: `filename-1.ipynb`
+   - Second conflict: `filename-2.ipynb`
+   - Continue incrementing until unique name found
+
+**Arguments:**
+- `notebook_name` (optional): Explicit notebook name to create. If not provided, uses default naming logic above.
+
+**Returns:** Success message with:
+- Resolved notebook name (accounting for any conflicts)
+- Complete Jupyter Lab URL with authentication token
+- Format: `{jupyter_url}/lab/tree/{notebook_name}?token={jupyterToken}`
+
+**WORKFLOW:**
+1. User requests notebook creation without or with a name
+2. Tool resolves the final filename (with conflict detection)
+3. Creates notebook via `jupyter_use_notebook` with `mode: "create"`
+4. Returns both the resolved name AND the full working URL
+
+**Examples:**
+- User: "Create a notebook" → Creates `Untitled.ipynb` (or `Untitled-1.ipynb` if exists)
+- User: "Create notebook named mywork" → Creates `mywork.ipynb` (or `mywork-1.ipynb` if exists)
+- Config has `defaultNotebook: "Analysis"` → Creates `Analysis.ipynb` when no name specified
+
+---
 
 ### `jupyter_use_notebook`
 **PURPOSE:** Activate a notebook for all subsequent notebook and cell operations.
