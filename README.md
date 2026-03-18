@@ -1,202 +1,463 @@
 # ClawPyter
 
-**ClawPyter** is a plugin for [OpenClaw](https://openclaw.ai) that lets you control Jupyter notebooks using AI. Once installed, you can ask Claude (or any AI running inside OpenClaw) to read, write, and run code in your notebooks — all in plain English, without touching the notebook manually.
+**ClawPyter** is a TypeScript plugin for [OpenClaw](https://openclaw.ai) that bridges OpenClaw's AI capabilities to Jupyter notebooks through the [Model Context Protocol](https://modelcontextprotocol.io) (MCP). The plugin enables Claude or any AI running inside OpenClaw to actively read, write, edit, and execute code in Jupyter notebooks — all in natural language, without manual interface interaction.
 
 ![ClawPyter](docs/_static/clawpyter.png)
 
 ---
 
-## What Does It Do?
+## What Can It Do?
 
-Normally, to work with a Jupyter notebook, you open it in a browser and interact with it yourself. ClawPyter bridges OpenClaw's AI to your Jupyter environment, so the AI can:
+ClawPyter exposes **19 tools** (16 core + 3 compatibility wrappers) that allow the AI to fully manage Jupyter notebooks:
 
-- **Browse** your notebook files and folders
-- **Open** any notebook
-- **Read** the contents of cells
-- **Insert** new code or text cells
-- **Edit** existing cells
-- **Run** cells and see their output
-- **Delete** cells
-- **Restart** the notebook kernel (the computation engine)
-- **Run quick code snippets** without permanently changing the notebook
+**Server & File Operations:**
+- Browse notebook files and filesystem structure
+- Connect to different Jupyter server instances dynamically
+- List available kernels and their status
 
-This is especially useful for scientific workflows, data analysis, and iterative coding where you want an AI assistant to actively work inside your notebook, not just give you suggestions to paste in yourself.
+**Notebook Lifecycle:**
+- Open (use) and close (unuse) notebooks
+- Switch between active notebooks
+- Restart notebook kernels
+- List all active notebook sessions
+
+**Cell Operations:**
+- Read cell contents (brief or detailed format)
+- Insert new code or Markdown cells
+- Edit existing cell source code
+- Delete one or multiple cells
+- Execute individual cells with timeout and streaming support
+- Run arbitrary code snippets directly in the kernel
+- Insert and execute code cells in a single operation
+
+**Execution Control:**
+- Support for Jupyter magic commands (`%timeit`, `%pip install`, etc.)
+- Shell command execution in the kernel (`!` commands)
+- Configurable timeouts and streaming progress updates
+- Capture and return execution outputs (text, HTML, images)
 
 ---
 
-## How It Works (Simple Version)
+## Architecture
 
 ```
-You (in OpenClaw chat)
+User (in OpenClaw chat)
         │
         ▼
-   OpenClaw AI  ──► ClawPyter Plugin
-                          │
-                          ▼
-               jupyter-mcp-server (background process)
-                          │
-                          ▼
-                  JupyterLab (running locally)
-                          │
-                          ▼
-                   Your .ipynb notebooks
+  OpenClaw Application
+        │
+        ▼
+  ClawPyter Plugin (TypeScript)
+        │ ← Makes JSON-RPC calls
+        ▼
+  jupyter-mcp-server (MCP server)
+        │ ← REST/HTTP API
+        ▼
+  JupyterLab (local instance)
+        │ ← Python Jupyter API
+        ▼
+  Your .ipynb notebooks & kernels
 ```
 
-1. You start JupyterLab and a small bridge server (`jupyter-mcp-server`) in the background using the provided `start_jpy.sh` script.
-2. ClawPyter is installed into OpenClaw as a plugin.
-3. When you chat with the AI in OpenClaw and ask it to do something with your notebook, ClawPyter translates that request into Jupyter API calls and sends them to the bridge server.
-4. The bridge server executes those actions in JupyterLab, and the results come back to you in the chat.
+**Key Components:**
+- **ClawPyter Plugin** (this repo): TypeScript/Node.js OpenClaw extension that exposes 19 Jupyter-related tools
+- **jupyter-mcp-server**: Separate MCP server process that translates tool calls into Jupyter API operations
+- **JupyterLab**: Local Jupyter installation providing the notebook runtime and kernel management
+- **Communication**: Plugin → MCP Server uses HTTP POST with JSON-RPC; MCP Server → JupyterLab uses Python Jupyter client libraries
 
 ---
 
-## Requirements
+## Prerequisites
 
-Before installing ClawPyter, make sure you have:
+Before installing ClawPyter, ensure you have:
 
-- **OpenClaw** installed and working ([openclaw.ai](https://openclaw.ai))
-- **Python** (3.9 or later recommended)
-- **pip** (Python package manager — comes with Python)
+- **OpenClaw** installed and running ([openclaw.ai](https://openclaw.ai))
+- **Python** 3.9 or later
+- **pip** (Python package manager)
 - **Node.js** and **npm** (for building the plugin — [nodejs.org](https://nodejs.org))
-- **uvx** (part of the [uv](https://docs.astral.sh/uv/) Python toolchain — used to run `jupyter-mcp-server`)
+- **conda** (for environment isolation — [conda.io](https://conda.io))
+- **uvx** (part of the [uv](https://docs.astral.sh/uv/) Python toolchain — used to launch `jupyter-mcp-server`)
 
 ---
 
 ## Installation
 
-### Step 1 — Install the Python/Jupyter dependencies
+### Step 1 — Set Up the Python Environment
 
-Open a terminal and run the following commands one by one:
+Create a dedicated conda environment for Jupyter dependencies:
+
+```bash
+conda create -n openclaw-jpy python=3.11
+conda activate openclaw-jpy
+```
+
+Install required packages:
 
 ```bash
 pip install jupyterlab==4.4.1 jupyter-collaboration==4.0.2 jupyter-mcp-tools>=0.1.4 ipykernel
-```
-
-```bash
 pip uninstall -y pycrdt datalayer_pycrdt
 pip install datalayer_pycrdt==0.12.17
 ```
 
-> **Why the specific versions?**
-> `jupyter-mcp-tools` requires compatible versions of `jupyterlab` and `datalayer_pycrdt`. The uninstall-and-reinstall step ensures you have the exact version that works correctly with the bridge server.
+> **Important:** The version constraints ensure compatibility between JupyterLab, the MCP server bridge, and the kernel. The uninstall-reinstall step resolves dependency conflicts.
 
 ---
 
 ### Step 2 — Build and Install the ClawPyter Plugin
 
-Navigate to the `clawpyter` project folder in your terminal, then run:
+Navigate to the clawpyter repository and run:
 
 ```bash
-./install.sh
+npm install
+npm run build
 ```
 
-This script does the following automatically:
+Then integrate the plugin into OpenClaw:
 
-1. Restarts the Ollama service (if you use local AI models)
-2. Stops the OpenClaw daemon
-3. Installs Node.js dependencies (`npm install`)
-4. Compiles the TypeScript source code (`npm run build`)
-5. Uninstalls any old version of ClawPyter from OpenClaw
-6. Installs the freshly built plugin
-7. Restarts the OpenClaw daemon
+```bash
+./build.sh
+```
 
-> **Note:** The script uses `sudo` for some steps, so you may be prompted for your system password.
-
-After this step, ClawPyter will appear as an installed plugin inside OpenClaw.
+This compiles the TypeScript source (`src/`) into `dist/index.js`, which OpenClaw loads as a plugin.
 
 ---
 
-### Step 3 — Start Jupyter and the Bridge Server
+### Step 3 — Start the Jupyter Environment
 
-Each time you want to use ClawPyter, start the Jupyter environment by running:
+Each time you want to use ClawPyter, initialize the Jupyter and MCP servers:
 
 ```bash
-./start_jpy.sh
+./start_jpy.sh -n ~/.openclaw/jupyter_home
 ```
 
-This script:
-- Launches **JupyterLab** on port `8888` (using `~/.openclaw/jupyter_home` as the notebook directory)
-- Generates a secure random token for authentication
-- Waits until JupyterLab is ready
-- Launches **jupyter-mcp-server** on port `4040` — this is the bridge between ClawPyter and JupyterLab
+**What this script does:**
+1. Stops any previously running JupyterLab or jupyter-mcp-server instances
+2. Generates a secure random authentication token for Jupyter
+3. Starts **JupyterLab** on port 8888 with the specified notebook directory
+4. Waits until JupyterLab is fully responsive
+5. Starts **jupyter-mcp-server** on port 4040 (the MCP bridge)
+6. Displays the Jupyter access URL (with embedded token)
+7. Prints the plugin configuration to inject into OpenClaw's manifest
+8. Updates the OpenClaw configuration file automatically (via jq or Python)
 
-Both processes run quietly in the background, logging to `/tmp/jupyterlab.log` and `/tmp/jupytermcp.log`.
+**Output example:**
+```
+http://gpustation1:8888/?token=a1b2c3d4-e5f6-g7h8-i9j0k1l2m3n4
 
-To stop everything when you're done:
+# ---------
+# Plugin configuration to use:
+# ---------
+        "config": {
+          "jupyterUrl": "http://gpustation1:8888",
+          "jupyterToken": "a1b2c3d4-e5f6-g7h8-i9j0k1l2m3n4",
+          "notebookDir": "/home/user/.openclaw/jupyter_home"
+        }
+```
+
+Logs are written to `/tmp/jupyterlab.log` and `/tmp/jupytermcp.log` for debugging.
+
+**Advanced options:**
+```bash
+./start_jpy.sh -h  # View all options
+./start_jpy.sh -n <path> -o <manifest_path> -t <custom_token>
+```
+
+---
+
+### Step 4 — Stop the Services
+
+When done, cleanly shut down both services:
 
 ```bash
 ./stop_jpy.sh
 ```
 
----
+This safely terminates JupyterLab and jupyter-mcp-server, verifying PIDs before killing to avoid errors.
 
-## Configuration (Optional)
+## Configuration
 
-ClawPyter works out of the box with default settings. If you need to customize it, you can set the following options in OpenClaw's plugin configuration for ClawPyter:
+ClawPyter automatically configures itself based on output from `start_jpy.sh`. However, you can override settings in OpenClaw's plugin configuration:
 
 | Option | Default | Description |
 |---|---|---|
-| `baseUrl` | `http://127.0.0.1:4040` | Address of the jupyter-mcp-server |
-| `authToken` | _(none)_ | Authentication token, if your server requires one |
-| `defaultNotebook` | _(none)_ | A notebook to open automatically |
-| `timeoutMs` | `30000` (30 seconds) | How long to wait for Jupyter responses |
+| `mcpUrl` | `http://127.0.0.1:4040` | Address of the jupyter-mcp-server instance |
+| `jupyterUrl` | `http://127.0.0.1:8888` | Address of the JupyterLab server |
+| `jupyterToken` | _(empty)_ | Authentication token for Jupyter (set by `start_jpy.sh`) |
+| `notebookDir` | _(none)_ | Default directory for notebooks (set by `start_jpy.sh`) |
+| `defaultNotebook` | _(none)_ | Notebook name to activate automatically on startup |
+| `timeoutMs` | `30000` (30 seconds) | Default timeout for tool execution |
 
-Most users don't need to change any of these.
-
----
-
-## Using ClawPyter
-
-Once everything is running, just talk to the AI in OpenClaw as you normally would. Here are some examples of what you can ask:
-
-> *"List the notebooks in my Jupyter home folder."*
-
-> *"Open the notebook `analysis.ipynb` and show me its cells."*
-
-> *"Add a new cell at the end that plots a histogram of the `age` column."*
-
-> *"Run cell 3 and tell me what it outputs."*
-
-> *"Fix the bug in cell 5 and rerun it."*
-
-> *"Delete cells 10 and 11."*
-
-> *"Restart the notebook kernel and rerun everything from the top."*
-
-The AI understands the context of your notebook and operates on it step by step — no copy-pasting required.
+The `start_jpy.sh` script automatically updates these values in your OpenClaw configuration file.
 
 ---
 
-## Available Tools (Complete Reference)
+## Usage Examples
 
-ClawPyter provides **19 tools** (16 core + 3 compatibility wrappers) organized into three categories. All tools use the format `jupyter_TOOLNAME`.
+Once everything is running, simply chat with the AI in OpenClaw. Here are typical requests:
 
-### Server Management Tools (4 tools)
-These tools inspect the Jupyter server's filesystem, kernel state, and configuration.
+**Exploration:**
+> "List my notebooks in the Jupyter home directory."
+> "Show me all running kernels."
+
+**Notebook Operations:**
+> "Open the notebook `analysis.ipynb` and show me its cells in brief format."
+> "List all notebooks I'm currently working with."
+
+**Cell Edits:**
+> "Insert a new code cell at the end that plots a histogram of the `age` column."
+> "Replace cell 5 with a function that calculates the mean of column X."
+> "Delete cells 10 through 12."
+
+**Execution:**
+> "Run cell 3 and show me what it outputs."
+> "Execute this code snippet: `import pandas as pd; print(pd.__version__)`"
+> "Install numpy using pip and then verify the installation."
+
+**Maintenance:**
+> "Restart the notebook kernel to clear all variables."
+> "Run all cells from the beginning to regenerate outputs."
+
+The AI understands context, reads cell outputs, and iteratively refines code — all without manual copy-paste.
+
+## Complete Tool Reference
+
+ClawPyter exposes **19 tools** organized into four categories. All tool names are prefixed with `jupyter_` (e.g., `jupyter_list_files`).
+
+### Server & Connection Tools (4 tools)
 
 #### `jupyter_list_files`
-**Purpose:** Explore and list files/directories in the Jupyter server's workspace.
+List files and directories in the Jupyter server's filesystem recursively.
 
-**When to use:** Locate notebook files, explore directory structure, check file existence.
+**Parameters:**
+- `path` (optional): Directory path to list; defaults to root
+- `max_depth` (optional): Recursion depth (1-3); default: 1
+- `start_index` (optional): Pagination start index; default: 0
+- `limit` (optional): Maximum results to return; default: 25
+- `pattern` (optional): Glob pattern to filter files
 
-**Key parameters:** `path`, `max_depth` (1-3), `pattern` (glob filter), `limit` (default: 25)
-
-**Returns:** Tab-separated table with file path, type, size, and modification timestamp.
+**Returns:** Tab-separated table with columns: `Path`, `Type`, `Size`, `Last_Modified`
 
 ---
 
 #### `jupyter_list_kernels`
-**Purpose:** List all available and running kernels (computation engines).
+Show all available and running kernels with their status and statistics.
 
-**When to use:** Check kernel availability/status, monitor kernel resources, identify kernel IDs.
-
-**Returns:** Table with kernel ID, name, language, state (idle/busy), connections, and last activity.
+**Returns:** Tab-separated table with columns: `ID`, `Name`, `Display_Name`, `Language`, `State`, `Connections`, `Last_Activity`, `Environment`
 
 ---
 
 #### `jupyter_connect_to_jupyter`
-**Purpose:** Dynamically connect to a different Jupyter server without restarting.
+Dynamically connect to a different Jupyter server without restarting the MCP server.
 
-**When to use:** Switch to another Jupyter server instance, connect with authentication token.
+**Parameters:**
+- `jupyter_url` (required): URL of the Jupyter server (e.g., `http://localhost:8888`)
+- `jupyter_token` (optional): Authentication token
+- `provider` (optional): Connection provider type; default: `jupyter`
+
+**Returns:** Connection status confirmation
+
+---
+
+#### `jupyter_info`
+Retrieve current Jupyter and MCP server configuration and connection details.
+
+**Returns:** JSON object with `jupyter_url`, `jupyter_token`, and other connection parameters
+
+---
+
+### Notebook Session Management (6 tools)
+
+#### `jupyter_use_notebook`
+Open and activate a notebook for subsequent cell operations.
+
+**Parameters:**
+- `notebook_path` (required): Relative path to the notebook file from Jupyter root
+- `notebook_name` (required): Unique identifier for this notebook session
+- `mode` (optional): `'connect'` (open existing) or `'create'` (create new); default: `'connect'`
+- `kernel_id` (optional): Specific kernel to attach (uses default if omitted)
+
+**Returns:** Notebook metadata including kernel info, activation status, and cell overview
+
+---
+
+#### `jupyter_list_notebooks`
+List all notebooks currently loaded in the MCP server with their session status.
+
+**Returns:** Tab-separated table with columns: `Name`, `Path`, `Kernel_ID`, `Kernel_Status`, `Activate` (✓ if active)
+
+---
+
+#### `jupyter_unuse_notebook`
+Close and release a notebook session's resources.
+
+**Parameters:**
+- `notebook_name` (required): Notebook identifier from `list_notebooks`
+
+**Returns:** Confirmation of disconnection and resource release
+
+---
+
+#### `jupyter_restart_notebook`
+Restart the kernel of a specific notebook, clearing all variables and state.
+
+**Parameters:**
+- `notebook_name` (required): Notebook identifier
+
+**Returns:** Confirmation that kernel has been restarted
+
+---
+
+#### `jupyter_unuse_notebook_compat`
+*(Compatibility wrapper)* Close a notebook. Accepts either `notebook_name` or `notebook_path` (falls back to path if name is omitted).
+
+---
+
+#### `jupyter_restart_notebook_compat`
+*(Compatibility wrapper)* Restart a notebook kernel. Accepts either `notebook_name` or `notebook_path` (falls back to path if name is omitted).
+
+---
+
+### Notebook Content & Reading (2 tools + 1 wrapper)
+
+#### `jupyter_read_notebook`
+Read the full contents of an active notebook, retrieving all cell metadata, sources, and outputs.
+
+**Parameters:**
+- `notebook_name` (required): Notebook identifier
+- `response_format` (optional): `'brief'` (first line + count) or `'detailed'` (full source); default: `'brief'`
+- `start_index` (optional): Cell index to start from; default: 0
+- `limit` (optional): Maximum cells to return; default: 20
+
+**Returns:** Notebook metadata, cell details (index, type, execution count), sources, and pagination info
+
+**Best Practice:** Use `brief` format with larger limit for an overview, then `detailed` format with exact indices for specific cells.
+
+---
+
+#### `jupyter_read_cell`
+Read a single cell from the active notebook with full details.
+
+**Parameters:**
+- `cell_index` (required): 0-based cell position
+- `include_outputs` (optional): Include execution outputs for code cells; default: `true`
+
+**Returns:** Cell metadata (type, execution count), source code, and outputs (if applicable)
+
+---
+
+#### `jupyter_read_notebook_compat`
+*(Compatibility wrapper)* Read a notebook. Accepts either `notebook_name` or `notebook_path` (falls back to path if name is omitted).
+
+---
+
+### Cell Operations (6 tools)
+
+#### `jupyter_insert_cell`
+Insert a new cell at a specified position in the active notebook.
+
+**Parameters:**
+- `cell_index` (required): 0-based position; use `-1` to append at the end
+- `cell_type` (required): `'code'` or `'markdown'`
+- `cell_source` (required): Cell content (Python code or Markdown text)
+
+**Returns:** Insertion confirmation with surrounding cell structure (±5 cells for context)
+
+---
+
+#### `jupyter_overwrite_cell_source`
+Replace the source code of an existing cell.
+
+**Parameters:**
+- `cell_index` (required): 0-based cell position
+- `cell_source` (required): New complete cell source code
+
+**Returns:** Diff-style comparison showing deleted lines (−) and added lines (+)
+
+---
+
+#### `jupyter_delete_cell`
+Delete one or multiple cells from the active notebook.
+
+**Parameters:**
+- `cell_indices` (required): List of 0-based cell indices to delete
+- `include_source` (optional): Include source code of deleted cells in response; default: `true`
+
+**Returns:** Deletion confirmation with sources (if requested)
+
+**Important Note:** When deleting multiple cells, provide indices in **descending order** to avoid index shifting issues.
+
+---
+
+#### `jupyter_execute_cell`
+Run a single cell and return its execution outputs.
+
+**Parameters:**
+- `cell_index` (required): 0-based cell position
+- `timeout` (optional): Maximum execution time in seconds; default: 90
+- `stream` (optional): Enable streaming progress updates for long operations; default: `false`
+- `progress_interval` (optional): Streaming update frequency in seconds; default: 5
+
+**Returns:** List of outputs (text, HTML, images, error tracebacks)
+
+---
+
+#### `jupyter_insert_execute_code_cell`
+Insert a code cell at a specified position and immediately execute it (shortcut combining insert + execute).
+
+**Parameters:**
+- `cell_index` (required): 0-based position; `-1` to append
+- `cell_source` (required): Python code
+- `timeout` (optional): Execution timeout in seconds; default: 90
+
+**Returns:** Insertion confirmation plus execution results
+
+---
+
+#### `jupyter_execute_code`
+Execute arbitrary code directly in the kernel without saving it to the notebook.
+
+**Parameters:**
+- `code` (required): Python code, Jupyter magic commands (%), or shell commands (!)
+- `timeout` (optional): Execution timeout in seconds (1-60); default: 30
+
+**Returns:** Execution output (text, HTML, images, shell results)
+
+**Supported Commands:**
+- Standard Python: `import pandas as pd; df = pd.read_csv('file.csv')`
+- Jupyter magics: `%timeit`, `%pip install`, `%matplotlib inline`
+- Shell commands: `!ls -la`, `!python script.py`, `!npm list`
+
+**Use Cases:** 
+- Check intermediate variable values without permanent changes
+- Temporary debugging and performance profiling
+- Install packages and verify versions
+- Run shell commands for system interaction
+
+**Do NOT use for:** Persistent variable assignments, module imports (use notebook cells instead), executing untrusted code
+
+---
+
+## Project Structure
+
+```
+clawpyter/
+├── src/
+│   ├── index.ts              # Main plugin file with all 19 tool definitions
+│   └── jupyter-mcp-client.ts # HTTP client for communicating with jupyter-mcp-server
+├── dist/                     # Compiled JavaScript (generated by npm run build)
+├── start_jpy.sh             # Launch JupyterLab + jupyter-mcp-server
+├── stop_jpy.sh              # Stop both services
+├── package.json             # Node.js dependencies and build config
+├── tsconfig.json            # TypeScript compiler settings
+├── build.sh                 # OpenClaw plugin build/install script
+├── README.md                # This file
+└── docs/                    # Documentation assets
+```
+
+**Build Process:**
+1. `npm install` — Install dependencies (@sinclair/typebox, TypeScript)
+2. `npm run build` — Compile TypeScript src/ → dist/index.js
+3. `./build.sh` — Integrate compiled plugin into OpenClaw
 
 **Key parameters:** `jupyter_url` (required), `jupyter_token` (optional), `provider` (default: jupyter)
 
@@ -632,16 +893,103 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ---
 
+## Troubleshooting
+
+### Services Won't Start
+
+**Problem:** Running `start_jpy.sh -n <path>` fails or processes don't start.
+
+**Solutions:**
+1. Check conda environment: `conda activate openclaw-jpy`
+2. Verify JupyterLab installation: `python -m jupyter lab --version`
+3. Check for port conflicts: `lsof -i :8888` and `lsof -i :4040`
+4. Review logs: `cat /tmp/jupyterlab.log` and `cat /tmp/jupytermcp.log`
+5. Kill stale processes: `pkill -f jupyterlab` and `pkill -f jupyter-mcp-server`
+
+---
+
+### Connection Refused Errors
+
+**Problem:** ClawPyter reports "HTTP 127.0.0.1:4040: Connection refused"
+
+**Causes & Fixes:**
+- jupyter-mcp-server not running: Run `./start_jpy.sh` with appropriate notebook directory
+- MCP server on different port: Update `mcpUrl` in OpenClaw plugin config
+- Firewall blocking localhost connections: Disable firewall or allow localhost
+
+---
+
+### Notebook Operations Fail
+
+**Problem:** Tools like `jupyter_use_notebook` or `jupyter_execute_cell` return errors.
+
+**Check:**
+1. Is a notebook currently active? Use `jupyter_list_notebooks` first
+2. Is the notebook path correct? Use `jupyter_list_files` to verify
+3. Are cell indices in valid range? Use `jupyter_read_notebook` to inspect
+4. Is the kernel still responsive? Try `jupyter_list_kernels`
+
+---
+
+### Kernel Errors / Code Won't Execute
+
+**Problem:** Cell execution fails with "Kernel error" or timeout.
+
+**Solutions:**
+1. Restart the kernel: `jupyter_restart_notebook` clears state and memory
+2. Check timeout settings: Increase `timeout` parameter for long-running cells
+3. Review execution output: Full error messages appear in cell output
+4. Check kernel language: Use `jupyter_list_kernels` to verify Python/environment
+
+---
+
+### Token & Authentication Issues
+
+**Problem:** Jupyter reports "403 Forbidden" or "Token does not match"
+
+**Fix:**
+The `start_jpy.sh` script auto-generates a unique token and injects it into the plugin config. If you modify tokens manually:
+1. Run `stop_jpy.sh` to terminate old sessions
+2. Run `start_jpy.sh` again to generate and inject a new token
+3. Verify `jupyterToken` in OpenClaw plugin config matches script output
+
+---
+
+### Resource Exhaustion
+
+**Problem:** OpenClaw becomes slow or unresponsive; notebooks don't save changes.
+
+**Possible Causes:**
+- Multiple notebook sessions open: Use `jupyter_list_notebooks` and close unused ones with `jupyter_unuse_notebook`
+- Kernel exhausted memory: Restart kernel with `jupyter_restart_notebook`
+- Long-running cells blocking: Increase timeout or run `stop_jpy.sh` to reset
+
+---
+
+### Plugin Not Appearing in OpenClaw
+
+**Problem:** ClawPyter tools don't appear after running `./build.sh`.
+
+**Steps:**
+1. Verify build succeeded: `cat dist/index.js` should show compiled JavaScript
+2. Restart OpenClaw daemon completely (not just reload)
+3. Check OpenClaw plugin directory for clawpyter entry
+4. Review build logs for TypeScript compilation errors: `npm run build`
+
+---
+
 ## Reference: MCP Server Specification
 
-ClawPyter implements the **[jupyter-mcp-server](https://github.com/anthropics/jupyter-mcp-server)** specification:
+ClawPyter implements the **[jupyter-mcp-server](https://github.com/anthropics/jupyter-mcp-server)** specification with full tool coverage:
 
 | Category | Core Tools | Compatibility Wrappers | Total |
 |---|:---:|:---:|:---:|
-| Server Management | 3 | 0 | 3 |
-| Notebook Management | 5 | 3 | 8 |
-| Cell Operations | 7 | 0 | 7 |
-| **Total** | **15** | **3** | **18** |
+| Server & Connection | 4 | 0 | 4 |
+| Notebook Session Management | 4 | 3 | 7 |
+| Notebook Content & Reading | 2 | 1 | 3 |
+| Cell Operations | 6 | 0 | 6 |
+| Special | 1 | 0 | 1 |
+| **Total** | **17** | **3** | **19** |
 
 All parameter names, types, requirements, and return values strictly follow the upstream reference. For complete technical documentation, see the [jupyter-mcp-server GitHub repository](https://github.com/anthropics/jupyter-mcp-server).
 

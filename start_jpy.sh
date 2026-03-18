@@ -117,9 +117,17 @@ rm -f /tmp/jupyterlab.pid
 # Start Jupyter Lab inside the conda environment in the background. The PID of
 # the wrapper process returned by `conda run` is not the actual Jupyter server
 # PID, so we later locate the real process with `pgrep`.
-conda run -n openclaw-jpy jupyter lab \
+
+echo jupyter lab \
 	--no-browser \
-	--notebook-dir "$NOTEBOOK_DIR" \
+	--ServerApp.root_dir="$NOTEBOOK_DIR" \
+	--IdentityProvider.token=${JUPYTER_TOKEN} \
+	--ip=0.0.0.0 \
+	--port 8888
+	
+jupyter lab \
+	--no-browser \
+	--ServerApp.root_dir="$NOTEBOOK_DIR" \
 	--IdentityProvider.token=${JUPYTER_TOKEN} \
 	--ip=0.0.0.0 \
 	--port 8888 \
@@ -128,7 +136,7 @@ conda run -n openclaw-jpy jupyter lab \
 # Give Jupyter a moment to start before searching for its PID.
 sleep 2
 # Find the PID of the Jupyter Lab process that matches the notebook directory.
-JLAB_PID=$(pgrep -f "jupyter-lab.*--notebook-dir $NOTEBOOK_DIR")
+JLAB_PID=$(pgrep -f "jupyter-lab.*--ServerApp.root_dir=$NOTEBOOK_DIR")
 echo "$JLAB_PID" > /tmp/jupyterlab.pid
 
 # wait for Jupyter to come up
@@ -136,14 +144,24 @@ until curl -s http://127.0.0.1:8888 >/dev/null; do
 	sleep 1
 done
 
-conda run -n openclaw-jpy uvx jupyter-mcp-server start \
+echo uvx jupyter-mcp-server start \
+	    --transport streamable-http \
+	    --jupyter-url http://127.0.0.1:8888 \
+	    --jupyter-token ${JUPYTER_TOKEN} \
+		--port 4040 \
+		--JupyterMCPServerExtensionApp.allowed_jupyter_mcp_tools="notebook_run-all-cells,notebook_get-selected-cell,notebook_append-execute,console_create"
+
+uvx jupyter-mcp-server start \
 	    --transport streamable-http \
 	    --jupyter-url http://127.0.0.1:8888 \
 	    --jupyter-token ${JUPYTER_TOKEN} \
 		--port 4040 \
 		> /tmp/jupytermcp.log 2>&1 &
 
+# --JupyterMCPServerExtensionApp.allowed_jupyter_mcp_tools="notebook_run-all-cells,notebook_get-selected-cell,notebook_append-execute,console_create" \
+		
 echo $! > /tmp/jupytermcp.pid
+
 
 echo
 echo \# ---------------------------------------------------------------------------
@@ -159,6 +177,11 @@ echo \# ------------------------------------------------------------------------
 echo \# URL to access Jupyter Lab \(with token for authentication\)
 echo \# ---------------------------------------------------------------------------
 echo http://$JUPYTER_IP:8888/?token=$JUPYTER_TOKEN
+echo
+echo \# ---------------------------------------------------------------------------
+echo \# To complete setup, restart openclaw with:
+echo \# ---------------------------------------------------------------------------
+echo openclaw gateway stop \&\& openclaw gateway install --force \&\& openclaw gateway restart
 echo
 
 # ---------------------------------------------------------------------------
