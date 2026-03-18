@@ -1,18 +1,24 @@
 #!/bin/bash
 
-# Check if notebook directory argument is provided
-if [ $# -eq 0 ]; then
-    echo "Usage: $0 <notebook_directory>"
-    echo ""
-    echo "Examples:"
-    echo "  $0 ~/.openclaw/jupyter_home"
-    echo "  $0 ~/notebooks"
-    echo "  $0 /tmp/jupyter_workspace"
-    exit 1
+# Check if at least the notebook directory argument is provided
+if [ $# -lt 1 ]; then
+	echo "Usage: $0 <notebook_directory> [jupyter_token]"
+	echo ""
+	echo "Examples:"
+	echo "  $0 ~/.openclaw/jupyter_home"
+	echo "  $0 ~/.openclaw/jupyter_home abcdef123456"
+	echo "  $0 ~/notebooks"
+	echo "  $0 /tmp/jupyter_workspace"
+	exit 1
 fi
 
 NOTEBOOK_DIR="$1"
-JUPYTER_TOKEN=$(uuid)
+# Use provided token as second argument, otherwise generate a new UUID
+if [ -n "$2" ]; then
+	JUPYTER_TOKEN="$2"
+else
+	JUPYTER_TOKEN=$(uuid)
+fi
 JUPYTER_IP=$(ip -4 route get 1.1.1.1 | grep -oP 'src \K\S+')
 
 export BROWSER=/usr/bin/microsoft-edge

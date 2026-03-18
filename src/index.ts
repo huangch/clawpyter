@@ -376,11 +376,13 @@ export default function register(api: any) {
         description: def.description,
         parameters: def.parameters,
         async execute(_id: string, params: Record<string, unknown>) {
+          console.log("Tool execution:", { _id, params });
           const response = await client.callTool(
             def.mcpName,
             def.buildArgs(params, cfg),
           );
           const result = JupyterMcpClient.unwrap(response);
+          console.log("Tool result:", { _id, result });
           return JupyterMcpClient.asToolText(def.title(params), result);
         },
       },
