@@ -15,7 +15,7 @@ ClawPyter provides three mandatory tool categories (16 core tools + 3 compatibil
 - `jupyter_list_files`
 - `jupyter_list_kernels`
 - `jupyter_connect_to_jupyter`
-- `jupyter_info`
+- `jupyter_server_info`
 
 **Notebook Management (5 tools + 3 compatibility wrappers)** — MUST use before all cell operations
 - `jupyter_use_notebook` (REQUIRED first step)
@@ -127,7 +127,7 @@ Cell operations (insert, edit, execute, delete) work ONLY on the **currently act
 
 **SECURITY NOTE:** Do NOT casually ask users to paste tokens. Only request when absolutely necessary for debugging.
 
-### `jupyter_info`
+### `jupyter_server_info`
 **PURPOSE:** Retrieve current configuration settings for both Jupyter and MCP servers.
 
 **MUST use this to:**
@@ -145,13 +145,37 @@ Cell operations (insert, edit, execute, delete) work ONLY on the **currently act
 - `mcpUrl` — the MCP server URL (e.g., `http://127.0.0.1:4040`)
 - `timeoutMs` — request timeout in milliseconds (default: 30000)
 
+**CRITICAL: Constructing Notebook URLs**
+
+When providing users with URLs to access notebooks, ALWAYS include the authentication token in the URL. Use this exact format:
+
+```
+{jupyter_url}/lab/tree/{notebook_path}?token={jupyterToken}
+```
+
+**Examples:**
+- `http://192.168.1.196:8888/lab/tree/notebook2.ipynb?token=abc123def456`
+- `http://127.0.0.1:8888/lab/tree/projects/demo.ipynb?token=xyz789uvw012`
+
+**REQUIRED COMPONENTS:**
+1. `jupyter_url` — The server URL (from jupyter_server_info)
+2. `/lab/tree/` — The Jupyter Lab path (DO NOT use direct file paths)
+3. `notebook_path` — The notebook file path relative to server root
+4. `?token=` — Query parameter with the authentication token (from jupyter_server_info)
+
 **Common use cases:**
-- Constructing Jupyter Lab URLs: `[jupyterUrl]/?token=[jupyterToken]/lab/tree/[notebook_path]`
+- When creating or activating notebooks, always call `jupyter_server_info` first
+- Share complete URLs with authentication tokens included
+- If URL doesn't include the token, users will get authentication errors
 - Verifying server connectivity before other operations
 - Providing user-friendly documentation of current server endpoints
 - Troubleshooting authentication or timeout issues
 
-**Example:** After calling this tool, you will know the exact URLs and token to debug connection problems or share with users.
+**Example workflow:**
+1. Call `jupyter_server_info` to get `jupyter_url` and `jupyterToken`
+2. Call `jupyter_create_notebook` to create a new notebook
+3. Construct the URL: `{jupyter_url}/lab/tree/{notebook_path}?token={jupyterToken}`
+4. Provide this complete URL to the user for notebook access
 
 ## Notebook Management Tools — MANDATORY before all cell operations
 
@@ -554,24 +578,14 @@ This separates "file exists on disk" from "server has active handle to notebook"
 
 ---
 
-## Accessing the Jupyter Server UI
+## Accessing the Jupyter Server UI — MUST construct URL correctly
 
-### Why You Need the Jupyter UI URL
-
-While ClawPyter provides comprehensive programmatic access to notebooks through the MCP tools (read, execute, modify cells), the Jupyter Lab web interface is essential for:
-
-- **Visual inspection and debugging**: Reviewing notebook outputs, charts, and rendered HTML in their native environment
-- **Interactive exploration**: Running quick exploratory code, testing hypotheses, and verifying computations interactively
-- **Complex visualizations**: Displaying rich media (plots, dataframes, images) that require Jupyter's rendering capabilities
-- **Manual interventions**: Fixing notebook issues, managing kernel state, or performing operations not covered by the MCP API
-- **Collaborative review**: Sharing a direct link to notebook state for human review or approval
-
-### Constructing the Jupyter Lab URL
+### Constructing the notebook URL
 
 The complete URL format combines the server connection details with the notebook path:
 
 ```
-[jupyter_url]/?token=[jupyter_token]/lab/tree/[notebook_path]
+[jupyter_url]?token=[jupyter_token]/lab/tree/[notebook_path]
 ```
 
 **URL Components:**
@@ -585,7 +599,7 @@ The complete URL format combines the server connection details with the notebook
 If the server is running at `http://192.168.0.1:8888` with token `01234567-89ab-cdef-0123-456789abcdef` and the notebook is `projects/data_analysis.ipynb`:
 
 ```
-http://192.168.0.1:8888/?token=01234567-89ab-cdef-0123-456789abcdef/lab/tree/projects/data_analysis.ipynb
+http://192.168.0.1:8888?token=01234567-89ab-cdef-0123-456789abcdef/lab/tree/projects/data_analysis.ipynb
 ```
 
 **Protocol Flow:**

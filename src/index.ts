@@ -66,6 +66,31 @@ export default function register(api: any) {
     timeout_ms,
   );
 
+    api.registerTool(
+    {
+      name: "jupyter_server_info",
+      description:
+        "Retrieve current configuration settings for both Jupyter server and MCP server. Returns the effective connection parameters and timeouts including: Jupyter server URL (jupyter_url) and Jupyter authentication token (jupyter_token). Use this tool to verify server connectivity details, construct notebook URLs, or diagnose connection issues.",
+      parameters: Type.Object({}),
+      async execute(_id: string, params: Record<string, unknown>) {
+        console.log("Tool execution:", {
+          name: "jupyter_server_info",
+          description: "Retrieve current configuration settings for both Jupyter server and MCP server.",
+          params,
+          _id,
+        });
+        const info = {
+          jupyter_url,
+          jupyter_token,
+        };
+        const result = JSON.stringify(info, null, 2);
+        console.log("Tool result:", { _id, name: "jupyter_server_info", result });
+        return JupyterMcpClient.asToolText("Jupyter server info", result);
+      },
+    },
+    { optional: true },
+  );
+  
   const toolDefs: ToolDef[] = [
     {
       openclawName: "jupyter_list_files",
@@ -395,22 +420,4 @@ export default function register(api: any) {
       { optional: true },
     );
   }
-
-  api.registerTool(
-    {
-      name: "jupyter_info",
-      description:
-        "Retrieve current configuration settings for both Jupyter server and MCP server. Returns the effective connection parameters and timeouts including: Jupyter server URL (jupyter_url) and Jupyter authentication token (jupyter_token). Use this tool to verify server connectivity details, construct notebook URLs, or diagnose connection issues.",
-      parameters: Type.Object({}),
-      async execute(_id: string, params: Record<string, unknown>) {
-        const info = {
-          jupyter_url,
-          jupyter_token,
-        };
-        return JupyterMcpClient.asToolText("Jupyter info", JSON.stringify(info, null, 2));
-      },
-    },
-    { optional: true },
-  );
-
 }

@@ -135,8 +135,14 @@ jupyter lab \
 
 # Give Jupyter a moment to start before searching for its PID.
 sleep 2
-# Find the PID of the Jupyter Lab process that matches the notebook directory.
-JLAB_PID=$(pgrep -f "jupyter-lab.*--ServerApp.root_dir=$NOTEBOOK_DIR")
+# Use the PID of the background process we just started
+JLAB_PID=$!
+# Verify the process is actually running
+if ! kill -0 "$JLAB_PID" 2>/dev/null; then
+	echo "Error: Failed to start Jupyter Lab (PID $JLAB_PID not running)"
+	cat /tmp/jupyterlab.log
+	exit 1
+fi
 echo "$JLAB_PID" > /tmp/jupyterlab.pid
 
 # wait for Jupyter to come up
