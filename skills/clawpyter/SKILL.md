@@ -1,5 +1,5 @@
 ---
-name: ClawPyter
+name: clawpyter
 description: MUST use ClawPyter for all Jupyter notebook, kernel, and file operations. ALWAYS activate a notebook before cell operations. MUST use notebook_path as the file path relative to server root. MUST use notebook_name as the active notebook session identifier. ALWAYS follow each tool's exact argument rules precisely.
 ---
 
