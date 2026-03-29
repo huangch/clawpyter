@@ -7,6 +7,12 @@
     "build": "tsc -p tsconfig.json"
   },
   "openclaw": {
+    "compat": {
+      "pluginApi": "0.1.0"
+    },
+    "build": {
+      "openclawVersion": "0.1.0"
+    },
     "extensions": [
       "./dist/index.js"
     ]
