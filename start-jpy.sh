@@ -194,7 +194,7 @@ if [ -z "$ACTUAL_PORT" ]; then
 fi
 
 # If Jupyter bound to a different port (auto-find case), rename the PID file
-# so that stop_jpy.sh -p <actual_port> can find it.
+# so that stop-jpy.sh -p <actual_port> can find it.
 if [ "$ACTUAL_PORT" != "$JUPYTER_PORT" ]; then
 	ACTUAL_PID_FILE="/tmp/jupyterlab-${ACTUAL_PORT}.pid"
 	mv "$PID_FILE" "$ACTUAL_PID_FILE"

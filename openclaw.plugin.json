@@ -7,7 +7,7 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "jupyterToken": { "type": "string", "description": "Authentication token for the Jupyter server. Generated automatically by start_jpy.sh and saved in environment. Required for secure access to the Jupyter server."  },
+      "jupyterToken": { "type": "string", "description": "Authentication token for the Jupyter server. Generated automatically by start-jpy.sh and saved in environment. Required for secure access to the Jupyter server."  },
       "jupyterUrl": { "type": "string", "description": "URL of the Jupyter Lab server. Default: http://127.0.0.1:8888. Used to construct notebook access URLs and verify connectivity."  },
       "notebookDir": { "type": "string", "description": "Physical directory path where notebooks are stored on the Jupyter server. Used with defaultNotebook to auto-increment notebook names (e.g., ~/.openclaw/jupyter_home). Relative paths are resolved from Jupyter root."  },
       "defaultNotebook": { "type": "string", "description": "Default notebook name used when creating new notebooks without explicit path. Defaults to 'Untitled' if not specified. Auto-increments to Untitled-1, Untitled-2, etc. if files exist."  },

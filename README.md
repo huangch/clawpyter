@@ -103,7 +103,7 @@ Then integrate the plugin into OpenClaw:
 Each time you want to use ClawPyter, start JupyterLab with the helper script:
 
 ```bash
-./start_jpy.sh -n ~/.openclaw/jupyter_home
+./start-jpy.sh -n ~/.openclaw/jupyter_home
 ```
 
 **What this script does:**
@@ -134,7 +134,7 @@ Logs are written to `/tmp/jupyterlab-<PORT>.log`.
 
 **Script options:**
 ```
-Usage: ./start_jpy.sh -n <notebook_directory> [-b] [-p <port>] [-t <jupyter_token>]
+Usage: ./start-jpy.sh -n <notebook_directory> [-b] [-p <port>] [-t <jupyter_token>]
 
   -n <path>    Required. Directory where notebooks are stored.
   -b           Open browser when Jupyter server starts (default: no browser).
@@ -144,9 +144,9 @@ Usage: ./start_jpy.sh -n <notebook_directory> [-b] [-p <port>] [-t <jupyter_toke
   -h           Show this help message.
 
 Examples:
-  ./start_jpy.sh -n ~/.openclaw/jupyter_home
-  ./start_jpy.sh -n ~/.openclaw/jupyter_home -p 8889
-  ./start_jpy.sh -n ~/.openclaw/jupyter_home -b -p 9000 -t mytoken123
+  ./start-jpy.sh -n ~/.openclaw/jupyter_home
+  ./start-jpy.sh -n ~/.openclaw/jupyter_home -p 8889
+  ./start-jpy.sh -n ~/.openclaw/jupyter_home -b -p 9000 -t mytoken123
 ```
 
 Copy the `Connect to Jupyter at …` line from the output and paste it into OpenClaw chat. The AI calls `jupyter_connect_to_jupyter` and is ready to work immediately — no `openclaw.json` config or OpenClaw restart needed.
@@ -157,10 +157,10 @@ When done, shut down JupyterLab:
 
 ```bash
 # Stop a specific instance by port
-./stop_jpy.sh -p 8888
+./stop-jpy.sh -p 8888
 
 # Or omit -p to get an interactive menu of all running instances
-./stop_jpy.sh
+./stop-jpy.sh
 ```
 
 With no `-p` flag: if only one instance is running it is stopped automatically; if multiple are running a numbered menu is shown with options to stop one or all.
@@ -183,12 +183,12 @@ PID files live at `/tmp/jupyterlab-<PORT>.pid`.
 
 The `config` block in `~/.openclaw/openclaw.json` is **optional**. If it is not set, ClawPyter starts with defaults (`http://127.0.0.1:8888`, empty token) and you connect at runtime by telling the AI the URL and token (see [Usage Examples](#usage-examples)).
 
-If you want the connection to persist across OpenClaw restarts, set the `config` block under `plugins.entries.clawpyter`. The `start_jpy.sh` script writes this automatically.
+If you want the connection to persist across OpenClaw restarts, set the `config` block under `plugins.entries.clawpyter`. The `start-jpy.sh` script writes this automatically.
 
 | Option | Default | Description |
 |---|---|---|
 | `jupyterUrl` | `http://127.0.0.1:8888` | URL of the JupyterLab server |
-| `jupyterToken` | _(empty)_ | Authentication token for Jupyter. Set automatically by `start_jpy.sh`. |
+| `jupyterToken` | _(empty)_ | Authentication token for Jupyter. Set automatically by `start-jpy.sh`. |
 | `notebookDir` | _(none)_ | Directory path where notebooks are stored. Used for conflict detection when naming new notebooks. |
 | `defaultNotebook` | _(none)_ | Default notebook filename used by `jupyter_create_notebook` when no name is given. |
 | `timeoutMs` | `30000` | Default timeout in milliseconds for all Jupyter operations. |
@@ -510,7 +510,7 @@ Do NOT use for code that needs to be saved in the notebook — use `jupyter_inse
 The token is missing or wrong. Two options:
 
 - **Runtime fix (no restart):** Tell the AI: *"Connect to Jupyter at `http://<host>:8888` with token `<token>`"* — the AI calls `jupyter_connect_to_jupyter` and the correct token takes effect immediately.
-- **Persistent fix:** Run `./start_jpy.sh -n <path>` again and restart OpenClaw. The script writes the correct token into `openclaw.json` automatically.
+- **Persistent fix:** Run `./start-jpy.sh -n <path>` again and restart OpenClaw. The script writes the correct token into `openclaw.json` automatically.
 
 ### AI says "No active notebook"
 
@@ -528,7 +528,7 @@ Common causes: port already in use, or the notebook directory does not exist.
 If the port is occupied and you used `-p`, the script exits immediately with an error message. Either free the port or omit `-p` to let Jupyter auto-select the next available one:
 ```bash
 mkdir -p ~/.openclaw/jupyter_home
-./start_jpy.sh -n ~/.openclaw/jupyter_home
+./start-jpy.sh -n ~/.openclaw/jupyter_home
 ```
 
 ### Verify JupyterLab is running
@@ -549,15 +549,15 @@ ls /tmp/jupyterlab-*.pid 2>/dev/null
 ### Restart a specific instance
 
 ```bash
-./stop_jpy.sh -p 8888
-./start_jpy.sh -n ~/.openclaw/jupyter_home -p 8888
+./stop-jpy.sh -p 8888
+./start-jpy.sh -n ~/.openclaw/jupyter_home -p 8888
 ```
 
 ### Restart everything
 
 ```bash
-./stop_jpy.sh        # interactive menu — select 'a' to stop all
-./start_jpy.sh -n ~/.openclaw/jupyter_home
+./stop-jpy.sh        # interactive menu — select 'a' to stop all
+./start-jpy.sh -n ~/.openclaw/jupyter_home
 openclaw gateway stop && openclaw gateway install --force && openclaw gateway restart
 ```
 
@@ -581,7 +581,7 @@ clawpyter/
 ├── package.json
 ├── tsconfig.json
 ├── build.sh                  # Build and install into OpenClaw
-├── start_jpy.sh              # Start JupyterLab
-├── stop_jpy.sh               # Stop JupyterLab
+├── start-jpy.sh              # Start JupyterLab
+├── stop-jpy.sh               # Stop JupyterLab
 └── README.md
 ```
