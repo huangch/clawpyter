@@ -2,27 +2,36 @@
 
 # ---------------------------------------------------------------
 # Argument handling using flags (compatible with conda environments)
-#   -o <manifest_path>   Optional, defaults to $HOME/.openclaw/openclaw.json
+#   -h                   Show usage and exit
+#   -b                   Open browser when Jupyter server starts (default: no browser)
 #   -n <notebook_dir>    Required, directory where notebooks are stored
+#   -p <port>            Optional, desired port (default: 8888). If specified and
+#                        occupied, the script will exit with an error instead of
+#                        trying another port.
 #   -t <jupyter_token>   Optional, defaults to a freshly generated UUID
 # ---------------------------------------------------------------
 
-DEFAULT_MANIFEST="$HOME/.openclaw/openclaw.json"
-MANIFEST="$DEFAULT_MANIFEST"
 NOTEBOOK_DIR=""
 JUPYTER_TOKEN=""
+DESIRED_PORT=""
+OPEN_BROWSER=false
 
-while getopts ":ho:n:t:" opt; do
+while getopts ":hbn:p:t:" opt; do
 	case $opt in
-		o) MANIFEST="$OPTARG" ;;
+		b) OPEN_BROWSER=true ;;
 		n) NOTEBOOK_DIR="$OPTARG" ;;
+		p) DESIRED_PORT="$OPTARG" ;;
 		t) JUPYTER_TOKEN="$OPTARG" ;;
-		h) echo "Usage: $0 -n <notebook_directory> [-o <manifest_path>] [-t <jupyter_token>]"
+		h) echo "Usage: $0 -n <notebook_directory> [-b] [-p <port>] [-t <jupyter_token>]"
+		   echo "";
+		   echo "Options:";
+		   echo "  -b          Open browser when Jupyter server starts";
+		   echo "  -p <port>   Desired port (default: 8888). Fails if port is already in use.";
 		   echo "";
 		   echo "Examples:";
-		   echo "  $0 -n ~/.openclaw/jupyter_home                # uses default manifest";
-		   echo "  $0 -o ~/.openclaw/openclaw.json -n ~/.openclaw/jupyter_home";
-		   echo "  $0 -o ~/.openclaw/openclaw.json -n ~/.openclaw/jupyter_home -t abcdef123456";
+		   echo "  $0 -n ~/.openclaw/jupyter_home";
+		   echo "  $0 -n ~/.openclaw/jupyter_home -p 8889";
+		   echo "  $0 -n ~/.openclaw/jupyter_home -b -p 9000 -t abcdef123456";
 		   exit 0 ;;
 		\?) echo "Invalid option: -$OPTARG" >&2; exit 1 ;;
 		:) echo "Option -$OPTARG requires an argument." >&2; exit 1 ;;
@@ -53,21 +62,6 @@ if [[ "$NOTEBOOK_DIR" != /* ]]; then
 	fi
 fi
 
-# Stop any existing Jupyter Lab process.
-if [ -f /tmp/jupyterlab.pid ]; then
-	JLAB_PID=$(cat /tmp/jupyterlab.pid)
-	if kill -0 "$JLAB_PID" 2>/dev/null; then
-		echo "Stopping existing Jupyter Lab (PID $JLAB_PID)"
-		kill "$JLAB_PID"
-	else
-		echo "Stale Jupyter Lab PID file found, but process $JLAB_PID is not running."
-	fi
-	# Remove the PID file regardless of whether the process was running.
-	rm -f /tmp/jupyterlab.pid
-else
-	echo "No existing Jupyter Lab PID file found; proceeding."
-fi
-
 # ---------------------------------------------------------------------
 # Generate a UUID/token – many Linux systems provide `uuid` or `uuidgen`.
 # If neither is available we fall back to reading /proc/sys/kernel/random/uuid
@@ -94,26 +88,83 @@ fi
 JUPYTER_IP=$(ip -4 route get 1.1.1.1 | grep -oP 'src \K\S+')
 
 # export BROWSER=/usr/bin/microsoft-edge
-# Remove any stale PID file before starting a new Jupyter Lab instance.
-rm -f /tmp/jupyterlab.pid
+
+# ---------------------------------------------------------------------
+# Port resolution:
+#   -p given  → check availability; fail immediately if occupied.
+#   -p absent → let Jupyter auto-find a free port starting from 8888.
+# ---------------------------------------------------------------------
+is_port_in_use() {
+	local port=$1
+	if command -v ss >/dev/null 2>&1; then
+		ss -tln 2>/dev/null | grep -q ":${port} "
+	elif command -v netstat >/dev/null 2>&1; then
+		netstat -tln 2>/dev/null | grep -q ":${port} "
+	else
+		# Fallback: try opening a TCP connection
+		(echo >/dev/tcp/127.0.0.1/"$port") 2>/dev/null
+	fi
+}
+
+if [ -n "$DESIRED_PORT" ]; then
+	if is_port_in_use "$DESIRED_PORT"; then
+		echo "Error: port $DESIRED_PORT is already in use. Free the port or omit -p to auto-select." >&2
+		exit 1
+	fi
+	JUPYTER_PORT="$DESIRED_PORT"
+	PORT_RETRIES=0   # hard-require the specified port; fail if Jupyter can't bind it
+else
+	JUPYTER_PORT=8888
+	PORT_RETRIES=50  # Jupyter default: auto-find next free port
+fi
+
+# PID and log files are keyed on port to support multiple simultaneous instances.
+PID_FILE="/tmp/jupyterlab-${JUPYTER_PORT}.pid"
+LOG_FILE="/tmp/jupyterlab-${JUPYTER_PORT}.log"
+
+# Stop any existing Jupyter Lab process on this port.
+if [ -f "$PID_FILE" ]; then
+	JLAB_PID=$(cat "$PID_FILE")
+	if kill -0 "$JLAB_PID" 2>/dev/null; then
+		echo "Stopping existing Jupyter Lab on port $JUPYTER_PORT (PID $JLAB_PID)"
+		kill "$JLAB_PID"
+	else
+		echo "Stale PID file found for port $JUPYTER_PORT, but process $JLAB_PID is not running."
+	fi
+	rm -f "$PID_FILE"
+else
+	echo "No existing Jupyter Lab process found for port $JUPYTER_PORT; proceeding."
+fi
+
+# Remove any stale PID/log files before starting a new instance.
+rm -f "$PID_FILE" "$LOG_FILE"
 
 # Start Jupyter Lab inside the conda environment in the background. The PID of
 # the wrapper process returned by `conda run` is not the actual Jupyter server
 # PID, so we later locate the real process with `pgrep`.
 
+NO_BROWSER_FLAG=""
+if [ "$OPEN_BROWSER" = false ]; then
+	NO_BROWSER_FLAG="--no-browser"
+fi
+
 echo jupyter lab \
-	--no-browser \
+	${NO_BROWSER_FLAG:+"$NO_BROWSER_FLAG"} \
 	--ServerApp.root_dir="$NOTEBOOK_DIR" \
 	--IdentityProvider.token=${JUPYTER_TOKEN} \
 	--ip=0.0.0.0 \
-	--port 8888
+	--port $JUPYTER_PORT \
+	--ServerApp.port_retries=$PORT_RETRIES
 	
+# shellcheck disable=SC2086
 jupyter lab \
+	$NO_BROWSER_FLAG \
 	--ServerApp.root_dir="$NOTEBOOK_DIR" \
 	--IdentityProvider.token=${JUPYTER_TOKEN} \
 	--ip=0.0.0.0 \
-	--port 8888 \
-	> /tmp/jupyterlab.log 2>&1 &
+	--port $JUPYTER_PORT \
+	--ServerApp.port_retries=$PORT_RETRIES \
+	> "$LOG_FILE" 2>&1 &
 
 # Give Jupyter a moment to start before searching for its PID.
 sleep 2
@@ -122,13 +173,37 @@ JLAB_PID=$!
 # Verify the process is actually running
 if ! kill -0 "$JLAB_PID" 2>/dev/null; then
 	echo "Error: Failed to start Jupyter Lab (PID $JLAB_PID not running)"
-	cat /tmp/jupyterlab.log
+	cat "$LOG_FILE"
 	exit 1
 fi
-echo "$JLAB_PID" > /tmp/jupyterlab.pid
+echo "$JLAB_PID" > "$PID_FILE"
 
-# wait for Jupyter to come up
-until curl -s http://127.0.0.1:8888 >/dev/null; do
+# Parse the actual port Jupyter bound to (may differ from JUPYTER_PORT if a
+# retry happened in the no-p case). Poll the log for up to 30 s.
+ACTUAL_PORT=""
+for i in $(seq 1 30); do
+	ACTUAL_PORT=$(grep -oP 'http://[^:]+:\K[0-9]+' "$LOG_FILE" 2>/dev/null | head -1)
+	if [ -n "$ACTUAL_PORT" ]; then
+		break
+	fi
+	sleep 1
+done
+if [ -z "$ACTUAL_PORT" ]; then
+	ACTUAL_PORT="$JUPYTER_PORT"
+	echo "Warning: could not detect actual port from log; assuming $JUPYTER_PORT"
+fi
+
+# If Jupyter bound to a different port (auto-find case), rename the PID file
+# so that stop_jpy.sh -p <actual_port> can find it.
+if [ "$ACTUAL_PORT" != "$JUPYTER_PORT" ]; then
+	ACTUAL_PID_FILE="/tmp/jupyterlab-${ACTUAL_PORT}.pid"
+	mv "$PID_FILE" "$ACTUAL_PID_FILE"
+	PID_FILE="$ACTUAL_PID_FILE"
+	echo "Note: Jupyter bound to port $ACTUAL_PORT (requested $JUPYTER_PORT)"
+fi
+
+# Wait for Jupyter to respond on the actual port.
+until curl -s http://127.0.0.1:$ACTUAL_PORT >/dev/null; do
 	sleep 1
 done
 
@@ -136,55 +211,12 @@ done
 
 echo
 echo \# ---------------------------------------------------------------------------
-echo \# The \`config\` object to be injected into the openclaw configuration
-echo \# ---------------------------------------------------------------------------
-echo "        \"config\": {"
-echo "          \"jupyterUrl\": \"http://$JUPYTER_IP:8888\","
-echo "          \"jupyterToken\": \"$JUPYTER_TOKEN\","
-echo "          \"notebookDir\": \"$NOTEBOOK_DIR\""
-echo "        }"   
-echo
-echo \# ---------------------------------------------------------------------------
 echo \# URL to access Jupyter Lab \(with token for authentication\)
 echo \# ---------------------------------------------------------------------------
-echo http://$JUPYTER_IP:8888/?token=$JUPYTER_TOKEN
+echo http://$JUPYTER_IP:$ACTUAL_PORT/?token=$JUPYTER_TOKEN
 echo
 echo \# ---------------------------------------------------------------------------
-echo \# To complete setup, restart openclaw with:
+echo \# Tell the AI to connect with:
 echo \# ---------------------------------------------------------------------------
-echo openclaw gateway stop \&\& openclaw gateway install --force \&\& openclaw gateway restart
+echo "Connect to Jupyter at http://$JUPYTER_IP:$ACTUAL_PORT with token $JUPYTER_TOKEN"
 echo
-
-# ---------------------------------------------------------------------------
-# Automatically inject the generated configuration into the plugin manifest
-# (the manifest path is supplied as the first argument). This updates the
-# `plugins.entries.clawpyter.config` object with the current Jupyter URL,
-# token, and notebook directory.
-# ---------------------------------------------------------------------------
-
-# Resolve manifest path to an absolute path if it is relative
-if [[ "$MANIFEST" != /* ]]; then
-	MANIFEST="$(cd "$(dirname "$0")" && pwd)/$MANIFEST"
-fi
-
-# Use jq to set the config object. If jq is not installed, fall back to a
-# simple Python one‑liner. The temporary file approach ensures atomic update.
-if command -v jq >/dev/null 2>&1; then
-	jq ".plugins.entries.clawpyter.config = {\
-		jupyterUrl: \"http://$JUPYTER_IP:8888\",\
-		jupyterToken: \"$JUPYTER_TOKEN\",\
-		notebookDir: \"$NOTEBOOK_DIR\"\
-	}" "$MANIFEST" > "$MANIFEST.tmp" && mv "$MANIFEST.tmp" "$MANIFEST"
-else
-	python3 - <<PY
-import json, pathlib, os
-manifest_path = pathlib.Path(os.path.abspath("$MANIFEST"))
-data = json.loads(manifest_path.read_text())
-data.setdefault('plugins', {}).setdefault('entries', {}).setdefault('clawpyter', {})['config'] = {
-	"jupyterUrl": f"http://{os.getenv('JUPYTER_IP')}:8888",
-	"jupyterToken": os.getenv('JUPYTER_TOKEN'),
-	"notebookDir": os.getenv('NOTEBOOK_DIR')
-}
-manifest_path.write_text(json.dumps(data, indent=2))
-PY
-fi

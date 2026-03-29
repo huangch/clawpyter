@@ -54,10 +54,11 @@ export default function register(api: any) {
 
   const client = new JupyterDirectClient(jupyter_url, jupyter_token, timeout_ms);
 
-  // Helper: Construct a full Jupyter Lab URL with authentication token
+  // Helper: Construct a full Jupyter Lab URL with authentication token.
+  // Reads from client so it stays correct after jupyter_connect_to_jupyter.
   function buildLabUrl(notebookPath: string): string {
     const cleanPath = notebookPath.replace(/^\/+/, "");
-    return `${jupyter_url}/lab/tree/${cleanPath}?token=${jupyter_token}`;
+    return `${client.jupyterUrl}/lab/tree/${cleanPath}?token=${client.jupyterToken}`;
   }
 
   // Helper: Resolve notebook name for creation with conflict detection
@@ -140,7 +141,7 @@ export default function register(api: any) {
     {
       name: "jupyter_server_info",
       description:
-        "Retrieve current configuration settings for both Jupyter server and MCP server. Returns the effective connection parameters and timeouts including: Jupyter server URL (jupyter_url) and Jupyter authentication token (jupyter_token). Use this tool to verify server connectivity details, construct notebook URLs, or diagnose connection issues.",
+        "Return the Jupyter server URL and token that ClawPyter is currently connected to. Use this to verify the active connection after calling jupyter_connect_to_jupyter, or to construct notebook access URLs.",
       parameters: Type.Object({}),
       async execute(_id: string, params: Record<string, unknown>) {
         console.log("Tool execution:", { name: "jupyter_server_info", params, _id });

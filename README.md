@@ -107,73 +107,83 @@ Each time you want to use ClawPyter, start JupyterLab with the helper script:
 ```
 
 **What this script does:**
-1. Stops any previously running JupyterLab instance
-2. Generates a secure random authentication token
-3. Starts JupyterLab on port 8888 bound to all network interfaces (`0.0.0.0`)
-4. Waits until JupyterLab is fully responsive
-5. Prints the access URL (with token) and the `config` block to inject into OpenClaw
-6. Automatically writes the `config` block into `~/.openclaw/openclaw.json`
+1. Resolves the port (pre-checks availability if `-p` is specified; otherwise auto-finds starting from 8888)
+2. Stops any previously running JupyterLab instance **on the same port**
+3. Generates a secure random authentication token
+4. Starts JupyterLab bound to all network interfaces (`0.0.0.0`)
+5. Detects the actual bound port from the log (in case auto-find picked a different one)
+6. Waits until JupyterLab is fully responsive
+7. Prints the access URL (with token) and a ready-to-paste AI connect command
+
+Multiple instances can run simultaneously — each is tracked by its own PID file (`/tmp/jupyterlab-<PORT>.pid`).
 
 **Output example:**
 ```
-# ---------------------------------------------------------------------------
-# The `config` object to be injected into the openclaw configuration
-# ---------------------------------------------------------------------------
-        "config": {
-          "jupyterUrl": "http://192.168.1.10:8888",
-          "jupyterToken": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-          "notebookDir": "/home/user/.openclaw/jupyter_home"
-        }
-
 # ---------------------------------------------------------------------------
 # URL to access Jupyter Lab (with token for authentication)
 # ---------------------------------------------------------------------------
 http://192.168.1.10:8888/?token=a1b2c3d4-e5f6-7890-abcd-ef1234567890
 
 # ---------------------------------------------------------------------------
-# To complete setup, restart openclaw with:
+# Tell the AI to connect with:
 # ---------------------------------------------------------------------------
-openclaw gateway stop && openclaw gateway install --force && openclaw gateway restart
+Connect to Jupyter at http://192.168.1.10:8888 with token a1b2c3d4-e5f6-7890-abcd-ef1234567890
 ```
 
-Logs are written to `/tmp/jupyterlab.log`.
+Logs are written to `/tmp/jupyterlab-<PORT>.log`.
 
 **Script options:**
 ```
-Usage: ./start_jpy.sh -n <notebook_directory> [-o <manifest_path>] [-t <jupyter_token>]
+Usage: ./start_jpy.sh -n <notebook_directory> [-b] [-p <port>] [-t <jupyter_token>]
 
   -n <path>    Required. Directory where notebooks are stored.
-  -o <path>    Optional. Path to openclaw.json. Default: ~/.openclaw/openclaw.json
+  -b           Open browser when Jupyter server starts (default: no browser).
+  -p <port>    Optional. Desired port (default: 8888). If specified and occupied,
+               the script exits with an error instead of trying another port.
   -t <token>   Optional. Use a specific token instead of generating one.
   -h           Show this help message.
 
 Examples:
   ./start_jpy.sh -n ~/.openclaw/jupyter_home
-  ./start_jpy.sh -n ~/.openclaw/jupyter_home -o ~/.openclaw/openclaw.json
-  ./start_jpy.sh -n ~/.openclaw/jupyter_home -t mytoken123
+  ./start_jpy.sh -n ~/.openclaw/jupyter_home -p 8889
+  ./start_jpy.sh -n ~/.openclaw/jupyter_home -b -p 9000 -t mytoken123
 ```
 
-After `start_jpy.sh` runs, restart OpenClaw to load the new config:
-
-```bash
-openclaw gateway stop && openclaw gateway install --force && openclaw gateway restart
-```
+Copy the `Connect to Jupyter at …` line from the output and paste it into OpenClaw chat. The AI calls `jupyter_connect_to_jupyter` and is ready to work immediately — no `openclaw.json` config or OpenClaw restart needed.
 
 ### Step 4 — Stop JupyterLab
 
 When done, shut down JupyterLab:
 
 ```bash
+# Stop a specific instance by port
+./stop_jpy.sh -p 8888
+
+# Or omit -p to get an interactive menu of all running instances
 ./stop_jpy.sh
 ```
 
-This reads the PID from `/tmp/jupyterlab.pid` and terminates the process safely.
+With no `-p` flag: if only one instance is running it is stopped automatically; if multiple are running a numbered menu is shown with options to stop one or all.
+
+```
+Running Jupyter Lab instances:
+  1) port 8888  (PID 12345)
+  2) port 8889  (PID 12399)
+  a) Stop all
+  q) Quit
+
+Select instance to stop [1-2/a/q]:
+```
+
+PID files live at `/tmp/jupyterlab-<PORT>.pid`.
 
 ---
 
 ## Configuration
 
-ClawPyter reads its settings from the `config` block in `~/.openclaw/openclaw.json` under `plugins.entries.clawpyter`. The `start_jpy.sh` script writes this block automatically.
+The `config` block in `~/.openclaw/openclaw.json` is **optional**. If it is not set, ClawPyter starts with defaults (`http://127.0.0.1:8888`, empty token) and you connect at runtime by telling the AI the URL and token (see [Usage Examples](#usage-examples)).
+
+If you want the connection to persist across OpenClaw restarts, set the `config` block under `plugins.entries.clawpyter`. The `start_jpy.sh` script writes this automatically.
 
 | Option | Default | Description |
 |---|---|---|
@@ -223,6 +233,13 @@ Once everything is running, chat with the AI in OpenClaw:
 **Maintenance:**
 > "Restart the notebook kernel."
 > "Connect to the Jupyter server at `http://gpu-box:8888` with token `abc123`."
+
+**Connect to any Jupyter server at runtime (no config needed):**
+
+Just tell the AI the URL and token before doing anything else:
+> "Connect to Jupyter at `http://192.168.1.100:8888` with token `abc123`, then list my notebooks."
+
+The AI calls `jupyter_connect_to_jupyter` first. All subsequent operations go to that server. No `openclaw.json` config or OpenClaw restart is needed.
 
 ---
 
@@ -490,7 +507,10 @@ Do NOT use for code that needs to be saved in the notebook — use `jupyter_inse
 
 ### AI gets a 403 Forbidden error
 
-The `jupyterToken` in `openclaw.json` is empty or wrong. Run `./start_jpy.sh -n <path>` again and restart OpenClaw. The script writes the correct token automatically.
+The token is missing or wrong. Two options:
+
+- **Runtime fix (no restart):** Tell the AI: *"Connect to Jupyter at `http://<host>:8888` with token `<token>`"* — the AI calls `jupyter_connect_to_jupyter` and the correct token takes effect immediately.
+- **Persistent fix:** Run `./start_jpy.sh -n <path>` again and restart OpenClaw. The script writes the correct token into `openclaw.json` automatically.
 
 ### AI says "No active notebook"
 
@@ -498,12 +518,14 @@ You must activate a notebook before using any cell tool. Call `jupyter_use_noteb
 
 ### JupyterLab did not start
 
-Check the log:
+Check the log (substitute the port you used):
 ```bash
-cat /tmp/jupyterlab.log
+cat /tmp/jupyterlab-8888.log
 ```
 
-Common causes: port 8888 already in use, or the notebook directory does not exist. Create the directory first:
+Common causes: port already in use, or the notebook directory does not exist.
+
+If the port is occupied and you used `-p`, the script exits immediately with an error message. Either free the port or omit `-p` to let Jupyter auto-select the next available one:
 ```bash
 mkdir -p ~/.openclaw/jupyter_home
 ./start_jpy.sh -n ~/.openclaw/jupyter_home
@@ -519,13 +541,22 @@ curl -s http://127.0.0.1:8888/api/status -H "Authorization: token YOUR_TOKEN"
 
 ```bash
 ps aux | grep jupyter
-cat /tmp/jupyterlab.pid
+
+# List all tracked PID files
+ls /tmp/jupyterlab-*.pid 2>/dev/null
+```
+
+### Restart a specific instance
+
+```bash
+./stop_jpy.sh -p 8888
+./start_jpy.sh -n ~/.openclaw/jupyter_home -p 8888
 ```
 
 ### Restart everything
 
 ```bash
-./stop_jpy.sh
+./stop_jpy.sh        # interactive menu — select 'a' to stop all
 ./start_jpy.sh -n ~/.openclaw/jupyter_home
 openclaw gateway stop && openclaw gateway install --force && openclaw gateway restart
 ```

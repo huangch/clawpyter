@@ -118,8 +118,8 @@ function uuid(): string {
 }
 
 export class JupyterDirectClient {
-  private jupyterUrl: string;
-  private jupyterToken: string;
+  jupyterUrl: string;
+  jupyterToken: string;
   private readonly timeoutMs: number;
 
   // In-memory state
