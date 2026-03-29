@@ -11,6 +11,23 @@ Use ClawPyter for EVERY operation that involves Jupyter notebooks, kernels, or f
 
 ---
 
+## MANDATORY PREREQUISITE: Jupyter server URL and token
+
+**Before doing ANYTHING with ClawPyter, you MUST have a valid Jupyter server URL and token.**
+
+If the user asks you to do anything Jupyter-related and you do not already have the URL and token (either from the current conversation or from a previous `jupyter_connect_to_jupyter` call), **stop and ask the user for them immediately**:
+
+> "To connect to your Jupyter server, I need the server URL and token. You can get these by running `./start-jpy.sh -n <notebook_dir>` and copying the `Connect to Jupyter at …` line it prints."
+
+Do not attempt any Jupyter tool call before the connection is established. Even `jupyter_list_files` will fail or silently hit the wrong server if the URL and token are not set.
+
+**Decision tree:**
+1. Do you have a URL and token from this conversation? → proceed.
+2. Did you already call `jupyter_connect_to_jupyter` successfully in this session? → proceed.
+3. Otherwise → **ask the user for the URL and token before doing anything else.**
+
+---
+
 ## Available tools
 
 There are 17 tools in three categories.
@@ -146,7 +163,7 @@ Arguments:
 
 Returns: a message confirming the new server URL.
 
-SECURITY RULE: Do not ask the user for their Jupyter token unless it is strictly required. Tokens are credentials.
+SECURITY NOTE: The token is a credential — do not log or display it unnecessarily. However, you MUST ask the user for it if you do not already have it. Never attempt to connect without a token.
 
 ---
 
