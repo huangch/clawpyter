@@ -8,7 +8,7 @@
 
 ## What Can It Do?
 
-ClawPyter exposes **17 tools** (14 core + 3 compatibility wrappers) that allow the AI to fully manage Jupyter notebooks:
+ClawPyter exposes **20 tools** (17 core + 3 compatibility wrappers) that allow the AI to fully manage Jupyter notebooks:
 
 **Server & File Operations:**
 - Browse notebook files and filesystem structure
@@ -183,7 +183,7 @@ PID files live at `/tmp/jupyterlab-<PORT>.pid`.
 
 The `config` block in `~/.openclaw/openclaw.json` is **optional**. If it is not set, ClawPyter starts with defaults (`http://127.0.0.1:8888`, empty token) and you connect at runtime by telling the AI the URL and token (see [Usage Examples](#usage-examples)).
 
-If you want the connection to persist across OpenClaw restarts, set the `config` block under `plugins.entries.clawpyter`. The `start-jpy.sh` script writes this automatically.
+If you want the connection to persist across OpenClaw restarts, set the `config` block manually under `plugins.entries.clawpyter` in `~/.openclaw/openclaw.json`.
 
 | Option | Default | Description |
 |---|---|---|
@@ -510,7 +510,7 @@ Do NOT use for code that needs to be saved in the notebook — use `jupyter_inse
 The token is missing or wrong. Two options:
 
 - **Runtime fix (no restart):** Tell the AI: *"Connect to Jupyter at `http://<host>:8888` with token `<token>`"* — the AI calls `jupyter_connect_to_jupyter` and the correct token takes effect immediately.
-- **Persistent fix:** Run `./start-jpy.sh -n <path>` again and restart OpenClaw. The script writes the correct token into `openclaw.json` automatically.
+- **Persistent fix:** Copy the token printed by `./start-jpy.sh` and update the `config.jupyterToken` field in `~/.openclaw/openclaw.json`, then restart OpenClaw.
 
 ### AI says "No active notebook"
 

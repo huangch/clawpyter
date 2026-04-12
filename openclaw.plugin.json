@@ -2,7 +2,7 @@
   "id": "clawpyter",
   "name": "ClawPyter",
   "description": "Jupyter integration for OpenClaw",
-  "skills": ["skills"],
+  "skills": ["skills/clawpyter"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
