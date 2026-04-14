@@ -1,0 +1,25 @@
+name: clawpyter
+version: 1.0.0
+description: Jupyter notebook integration — create, edit, and execute notebooks from Hermes Agent
+author: ClawPyter contributors
+provides_tools:
+  - jupyter_server_info
+  - jupyter_connect_to_jupyter
+  - jupyter_list_files
+  - jupyter_list_kernels
+  - jupyter_create_notebook
+  - jupyter_use_notebook
+  - jupyter_list_notebooks
+  - jupyter_restart_notebook
+  - jupyter_restart_notebook_compat
+  - jupyter_unuse_notebook
+  - jupyter_unuse_notebook_compat
+  - jupyter_read_notebook
+  - jupyter_read_notebook_compat
+  - jupyter_insert_cell
+  - jupyter_overwrite_cell_source
+  - jupyter_execute_cell
+  - jupyter_insert_execute_code_cell
+  - jupyter_read_cell
+  - jupyter_delete_cell
+  - jupyter_execute_code

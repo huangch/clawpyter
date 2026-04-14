@@ -9,5 +9,7 @@ npm install;
 npm run build; 
 openclaw plugins uninstall clawpyter; 
 openclaw plugins install -l `pwd`; 
+hermes plugins uninstall clawpyter;
+hermes plugins install -l `pwd`;
 # openclaw daemon restart
 

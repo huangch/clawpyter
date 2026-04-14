@@ -97,7 +97,7 @@ export default function register(api) {
         parameters: Type.Object({}),
         async execute(_id, params) {
             console.log("Tool execution:", { name: "jupyter_server_info", params, _id });
-            const info = { jupyter_url, jupyter_token };
+            const info = { jupyter_url: client.jupyterUrl, jupyter_token: client.jupyterToken };
             const result = JSON.stringify(info, null, 2);
             console.log("Tool result:", { _id, name: "jupyter_server_info", result });
             return JupyterDirectClient.asToolText("Jupyter server info", result);
