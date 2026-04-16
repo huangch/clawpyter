@@ -1,6 +1,13 @@
 # ClawPyter
 
-**ClawPyter** is a TypeScript plugin for [OpenClaw](https://openclaw.ai) that gives the AI direct access to JupyterLab. It enables Claude or any AI running inside OpenClaw to read, write, edit, and execute code in Jupyter notebooks — all in natural language, without manual interface interaction.
+**ClawPyter** gives any AI agent direct access to JupyterLab. It enables Claude or any LLM to read, write, edit, and execute code in Jupyter notebooks — all in natural language, without manual interface interaction.
+
+Two agents are supported:
+
+| Agent | Plugin format | Install script |
+|---|---|---|
+| [OpenClaw](https://openclaw.ai) | TypeScript (`dist/index.js`) | `./build.sh` |
+| [Hermes Agent](https://github.com/NousResearch/hermes-agent) | Python (`hermes-plugin/`) | `./build4hermes.sh` |
 
 ![ClawPyter](docs/_static/clawpyter.png)
 
@@ -43,13 +50,15 @@ ClawPyter exposes **20 tools** (17 core + 3 compatibility wrappers) that allow t
 ## Architecture
 
 ```
-User (in OpenClaw chat)
+User (in OpenClaw or Hermes chat)
         │
         ▼
-  OpenClaw Application
+  Agent Application
+  (OpenClaw  ·or·  Hermes Agent)
         │
         ▼
-  ClawPyter Plugin (TypeScript)
+  ClawPyter Plugin
+  (TypeScript for OpenClaw  ·or·  Python for Hermes)
         │ ← Jupyter REST API + WebSocket
         ▼
   JupyterLab (local instance, port 8888)
@@ -61,17 +70,26 @@ User (in OpenClaw chat)
 ClawPyter communicates directly with JupyterLab's REST API for file and session management, and uses WebSocket kernel channels for code execution. There is no intermediate MCP server.
 
 **Key files:**
-- **`src/index.ts`** — Main plugin file. Registers all 17 tools with OpenClaw.
-- **`src/jupyter-client.ts`** — `JupyterDirectClient` class. Handles all REST API and WebSocket communication with JupyterLab.
-- **`skills/clawpyter/SKILL.md`** — Operating instructions that teach the AI how and when to use each tool.
+- **`src/index.ts`** — TypeScript plugin. Registers all 20 tools with OpenClaw.
+- **`src/jupyter-client.ts`** — `JupyterDirectClient` class. REST API + WebSocket client (TypeScript).
+- **`hermes-plugin/`** — Python plugin for Hermes Agent (mirrors all 20 tools).
+- **`skills/clawpyter/SKILL.md`** — Operating instructions for the AI (shared by both agents).
 
 ---
 
 ## Prerequisites
 
+**Common (both agents):**
+- **JupyterLab** 4.x with a Python kernel: `pip install jupyterlab ipykernel`
+
+**For OpenClaw:**
 - **OpenClaw** installed and running ([openclaw.ai](https://openclaw.ai))
 - **Node.js** and **npm** ([nodejs.org](https://nodejs.org))
-- **JupyterLab** 4.x with a Python kernel (`pip install jupyterlab ipykernel`)
+
+**For Hermes Agent:**
+- **Hermes Agent** installed ([github.com/NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent))
+- **Python 3.9+** with **pip**
+- `pip install httpx websockets` (handled automatically by `build4hermes.sh`)
 
 ---
 
@@ -83,14 +101,9 @@ ClawPyter communicates directly with JupyterLab's REST API for file and session 
 pip install jupyterlab ipykernel
 ```
 
-### Step 2 — Build and Install the ClawPyter Plugin
+---
 
-```bash
-npm install
-npm run build
-```
-
-Then integrate the plugin into OpenClaw:
+### Installing for OpenClaw
 
 ```bash
 ./build.sh
@@ -98,7 +111,39 @@ Then integrate the plugin into OpenClaw:
 
 `build.sh` installs npm dependencies, compiles `src/` to `dist/index.js`, uninstalls any previous version, and reinstalls the plugin into OpenClaw.
 
-### Step 3 — Start JupyterLab
+---
+
+### Installing for Hermes Agent
+
+```bash
+./build4hermes.sh
+```
+
+`build4hermes.sh`:
+1. Installs the required Python dependencies (`httpx`, `websockets`) via `pip`
+2. Copies `hermes-plugin/` to `~/.hermes/plugins/clawpyter/`
+3. Compile-checks all Python files
+4. Reports registration status
+
+The plugin is discovered by Hermes at startup. If Hermes is already running, restart it after installing.
+
+**Configuration for Hermes** (set in your shell or a `.env` file):
+
+| Variable | Default | Description |
+|---|---|---|
+| `JUPYTER_URL` | `http://127.0.0.1:8888` | Jupyter server URL |
+| `JUPYTER_TOKEN` | _(empty)_ | Authentication token |
+| `JUPYTER_TIMEOUT_MS` | `30000` | Request timeout in ms |
+| `JUPYTER_DEFAULT_NOTEBOOK` | `Untitled` | Default notebook name for `jupyter_create_notebook` |
+
+```bash
+export JUPYTER_URL=http://127.0.0.1:8888
+export JUPYTER_TOKEN=<token-from-start-jpy.sh>
+```
+
+Alternatively, paste the `Connect to Jupyter at …` line printed by `start-jpy.sh` into the Hermes chat. The AI calls `jupyter_connect_to_jupyter` and all subsequent operations use that server.
+
+### Step 2 — Start JupyterLab
 
 Each time you want to use ClawPyter, start JupyterLab with the helper script:
 
@@ -151,7 +196,7 @@ Examples:
 
 Copy the `Connect to Jupyter at …` line from the output and paste it into OpenClaw chat. The AI calls `jupyter_connect_to_jupyter` and is ready to work immediately — no `openclaw.json` config or OpenClaw restart needed.
 
-### Step 4 — Stop JupyterLab
+### Step 3 — Stop JupyterLab
 
 When done, shut down JupyterLab:
 
@@ -181,17 +226,19 @@ PID files live at `/tmp/jupyterlab-<PORT>.pid`.
 
 ## Configuration
 
-The `config` block in `~/.openclaw/openclaw.json` is **optional**. If it is not set, ClawPyter starts with defaults (`http://127.0.0.1:8888`, empty token) and you connect at runtime by telling the AI the URL and token (see [Usage Examples](#usage-examples)).
+### OpenClaw
+
+The `config` block in `~/.openclaw/openclaw.json` is **optional**. If it is not set, ClawPyter starts with defaults (`http://127.0.0.1:8888`, empty token) and you connect at runtime by telling the AI the URL and token.
 
 If you want the connection to persist across OpenClaw restarts, set the `config` block manually under `plugins.entries.clawpyter` in `~/.openclaw/openclaw.json`.
 
 | Option | Default | Description |
 |---|---|---|
 | `jupyterUrl` | `http://127.0.0.1:8888` | URL of the JupyterLab server |
-| `jupyterToken` | _(empty)_ | Authentication token for Jupyter. Set automatically by `start-jpy.sh`. |
-| `notebookDir` | _(none)_ | Directory path where notebooks are stored. Used for conflict detection when naming new notebooks. |
-| `defaultNotebook` | _(none)_ | Default notebook filename used by `jupyter_create_notebook` when no name is given. |
-| `timeoutMs` | `30000` | Default timeout in milliseconds for all Jupyter operations. |
+| `jupyterToken` | _(empty)_ | Authentication token. Set automatically by `start-jpy.sh`. |
+| `notebookDir` | _(none)_ | Directory where notebooks are stored. Used for conflict detection. |
+| `defaultNotebook` | _(none)_ | Default notebook name for `jupyter_create_notebook`. |
+| `timeoutMs` | `30000` | Timeout in milliseconds for all Jupyter operations. |
 
 **Example `openclaw.json` fragment:**
 ```json
@@ -204,6 +251,10 @@ If you want the connection to persist across OpenClaw restarts, set the `config`
   }
 }
 ```
+
+### Hermes Agent
+
+Configuration is read from environment variables (see the table in [Installing for Hermes Agent](#installing-for-hermes-agent)). You can also set them in a `.env` file in your working directory. The connection can always be changed at runtime by telling Hermes: *"Connect to Jupyter at `<url>` with token `<token>`"*.
 
 ---
 
@@ -245,7 +296,7 @@ The AI calls `jupyter_connect_to_jupyter` first. All subsequent operations go to
 
 ## Tool Reference
 
-All 17 tools are prefixed with `jupyter_`.
+All 20 tools are prefixed with `jupyter_`. They work identically in both the OpenClaw (TypeScript) and Hermes Agent (Python) plugins.
 
 ### Server Tools (4 tools)
 
@@ -509,8 +560,9 @@ Do NOT use for code that needs to be saved in the notebook — use `jupyter_inse
 
 The token is missing or wrong. Two options:
 
-- **Runtime fix (no restart):** Tell the AI: *"Connect to Jupyter at `http://<host>:8888` with token `<token>`"* — the AI calls `jupyter_connect_to_jupyter` and the correct token takes effect immediately.
-- **Persistent fix:** Copy the token printed by `./start-jpy.sh` and update the `config.jupyterToken` field in `~/.openclaw/openclaw.json`, then restart OpenClaw.
+- **Runtime fix (no restart):** Tell the AI: *"Connect to Jupyter at `http://<host>:8888` with token `<token>`"* — the AI calls `jupyter_connect_to_jupyter` and the correct token takes effect immediately. Works in both agents.
+- **Persistent fix (OpenClaw):** Copy the token printed by `./start-jpy.sh` and update the `config.jupyterToken` field in `~/.openclaw/openclaw.json`, then restart OpenClaw.
+- **Persistent fix (Hermes):** Set `JUPYTER_TOKEN=<token>` in your environment or `.env` file before starting Hermes.
 
 ### AI says "No active notebook"
 
@@ -553,12 +605,21 @@ ls /tmp/jupyterlab-*.pid 2>/dev/null
 ./start-jpy.sh -n ~/.openclaw/jupyter_home -p 8888
 ```
 
-### Restart everything
+### Restart everything (OpenClaw)
 
 ```bash
 ./stop-jpy.sh        # interactive menu — select 'a' to stop all
 ./start-jpy.sh -n ~/.openclaw/jupyter_home
 openclaw gateway stop && openclaw gateway install --force && openclaw gateway restart
+```
+
+### Restart everything (Hermes Agent)
+
+```bash
+./stop-jpy.sh
+./start-jpy.sh -n ~/.openclaw/jupyter_home
+./build4hermes.sh    # re-install plugin if source changed
+hermes               # restart Hermes to reload the plugin
 ```
 
 ---
@@ -568,19 +629,26 @@ openclaw gateway stop && openclaw gateway install --force && openclaw gateway re
 ```
 clawpyter/
 ├── src/
-│   ├── index.ts              # Registers all 17 tools with OpenClaw
+│   ├── index.ts              # TypeScript plugin — registers all 20 tools with OpenClaw
 │   └── jupyter-client.ts     # JupyterDirectClient: REST API + WebSocket client
 ├── dist/                     # Compiled JavaScript (generated by npm run build)
+├── hermes-plugin/            # Python plugin for Hermes Agent
+│   ├── plugin.yaml           # Hermes manifest (name, version, provides_tools)
+│   ├── __init__.py           # register(ctx) — wires tools and installs skill
+│   ├── schemas.py            # OpenAI-format tool schemas for all 20 tools
+│   ├── tools.py              # Python Jupyter client (mirrors JupyterDirectClient)
+│   └── skill.md              # Skill file auto-installed to ~/.hermes/skills/clawpyter/
 ├── skills/
 │   └── clawpyter/
-│       └── SKILL.md          # Operating instructions for the AI
+│       └── SKILL.md          # Operating instructions for the AI (shared)
 ├── docs/
 │   └── _static/
 │       └── clawpyter.png
-├── openclaw.plugin.json      # Plugin metadata and config schema
+├── openclaw.plugin.json      # OpenClaw plugin metadata and config schema
 ├── package.json
 ├── tsconfig.json
 ├── build.sh                  # Build and install into OpenClaw
+├── build4hermes.sh           # Install Python plugin into Hermes Agent
 ├── start-jpy.sh              # Start JupyterLab
 ├── stop-jpy.sh               # Stop JupyterLab
 └── README.md
