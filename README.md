@@ -6,7 +6,7 @@ Two agents are supported:
 
 | Agent | Plugin format | Install script |
 |---|---|---|
-| [OpenClaw](https://openclaw.ai) | TypeScript (`dist/index.js`) | `./build.sh` |
+| [OpenClaw](https://openclaw.ai) | TypeScript (`openclaw-plugin/dist/index.js`) | `./build4openclaw.sh` |
 | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | Python (`hermes-plugin/`) | `./build4hermes.sh` |
 
 ![ClawPyter](docs/_static/clawpyter.png)
@@ -58,7 +58,7 @@ User (in OpenClaw or Hermes chat)
         │
         ▼
   ClawPyter Plugin
-  (TypeScript for OpenClaw  ·or·  Python for Hermes)
+  (openclaw-plugin/  ·or·  hermes-plugin/)
         │ ← Jupyter REST API + WebSocket
         ▼
   JupyterLab (local instance, port 8888)
@@ -70,10 +70,11 @@ User (in OpenClaw or Hermes chat)
 ClawPyter communicates directly with JupyterLab's REST API for file and session management, and uses WebSocket kernel channels for code execution. There is no intermediate MCP server.
 
 **Key files:**
-- **`src/index.ts`** — TypeScript plugin. Registers all 20 tools with OpenClaw.
-- **`src/jupyter-client.ts`** — `JupyterDirectClient` class. REST API + WebSocket client (TypeScript).
+- **`openclaw-plugin/src/index.ts`** — TypeScript plugin. Registers all 20 tools with OpenClaw.
+- **`openclaw-plugin/src/jupyter-client.ts`** — `JupyterDirectClient` class. REST API + WebSocket client (TypeScript).
+- **`openclaw-plugin/skills/clawpyter/SKILL.md`** — Operating instructions for the AI (OpenClaw).
 - **`hermes-plugin/`** — Python plugin for Hermes Agent (mirrors all 20 tools).
-- **`skills/clawpyter/SKILL.md`** — Operating instructions for the AI (shared by both agents).
+- **`hermes-plugin/skill.md`** — Operating instructions for the AI (Hermes).
 
 ---
 
@@ -106,10 +107,10 @@ pip install jupyterlab ipykernel
 ### Installing for OpenClaw
 
 ```bash
-./build.sh
+./build4openclaw.sh
 ```
 
-`build.sh` installs npm dependencies, compiles `src/` to `dist/index.js`, uninstalls any previous version, and reinstalls the plugin into OpenClaw.
+`build4openclaw.sh` changes into `openclaw-plugin/`, installs npm dependencies, compiles `src/` to `dist/index.js`, uninstalls any previous version, and reinstalls the plugin into OpenClaw.
 
 ---
 
