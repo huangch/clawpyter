@@ -207,6 +207,22 @@ until curl -s http://127.0.0.1:$ACTUAL_PORT >/dev/null; do
 	sleep 1
 done
 
+# ---------------------------------------------------------------------
+# Detect whether jupyter-collaboration (Y.js RTC) is enabled. ClawPyter's
+# Hermes plugin auto-detects this at runtime, but printing it here lets the
+# user know up-front whether human + agent co-editing will work.
+# ---------------------------------------------------------------------
+COLLAB_PROBE_URL="http://127.0.0.1:$ACTUAL_PORT/api/collaboration/session/Untitled.ipynb"
+COLLAB_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+	-H "Authorization: token $JUPYTER_TOKEN" \
+	-H "Content-Type: application/json" \
+	-d '{"format":"json","type":"notebook"}' \
+	"$COLLAB_PROBE_URL" 2>/dev/null || echo "000")
+if [ "$COLLAB_STATUS" = "200" ] || [ "$COLLAB_STATUS" = "201" ]; then
+	COLLAB_MODE="ENABLED (live human + agent co-editing supported)"
+else
+	COLLAB_MODE="DISABLED — install with: pip install jupyter-collaboration && restart"
+fi
 
 
 echo
@@ -214,6 +230,10 @@ echo \# ------------------------------------------------------------------------
 echo \# URL to access Jupyter Lab \(with token for authentication\)
 echo \# ---------------------------------------------------------------------------
 echo http://$JUPYTER_IP:$ACTUAL_PORT/?token=$JUPYTER_TOKEN
+echo
+echo \# ---------------------------------------------------------------------------
+echo \# jupyter-collaboration: $COLLAB_MODE
+echo \# ---------------------------------------------------------------------------
 echo
 echo \# ---------------------------------------------------------------------------
 echo \# Tell the AI to connect with:
