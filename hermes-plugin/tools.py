@@ -31,6 +31,8 @@ try:
 except ImportError:
     _HAS_WEBSOCKETS = False
 
+from . import collab_client as _collab
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,6 +50,13 @@ class _State:
         self.current_notebook: Optional[str] = None
         # name -> {"path": str, "kernel_id": str, "session_id": str}
         self.sessions: dict = {}
+        # Collaboration: tri-state mode ("auto" / "on" / "off") + cached probe result.
+        # "off" = never use RTC. "on" = require RTC (error if unavailable).
+        # "auto" = probe once per server, prefer RTC if the endpoint answers.
+        self.collab_mode: str = os.environ.get("JUPYTER_COLLAB_MODE", "auto").lower()
+        self.collab_available: Optional[bool] = None  # None = not probed yet
+        # name -> CollabRoom
+        self.collab_rooms: dict = {}
 
 
 _state = _State()
@@ -376,6 +385,66 @@ def _resolve_notebook_identifier(args: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Collaboration (Y.js RTC) helpers
+# ---------------------------------------------------------------------------
+
+async def _ensure_collab_probed() -> bool:
+    """Probe ``/api/collaboration/session/...`` once per server (cached).
+
+    Returns True iff jupyter-collaboration is available and the user hasn't
+    disabled it via ``JUPYTER_COLLAB_MODE=off``."""
+    if _state.collab_mode == "off":
+        _state.collab_available = False
+        return False
+    if not _collab.HAS_COLLAB:
+        _state.collab_available = False
+        return False
+    if _state.collab_available is not None:
+        return _state.collab_available
+    # Probe against a stable path: prefer an active session's path.
+    probe_path = next(iter(_state.sessions.values()))["path"] if _state.sessions else ""
+    available = await _collab.probe_server_collab(
+        None, _state.jupyter_url, _state.jupyter_token, probe_path or "Untitled.ipynb"
+    )
+    _state.collab_available = available
+    if not available and _state.collab_mode == "on":
+        logger.warning("JUPYTER_COLLAB_MODE=on but server has no jupyter-collaboration; using REST fallback.")
+    return available
+
+
+async def _open_collab_room(notebook_name: str, path: str):
+    """Open a CollabRoom for ``notebook_name`` if collaboration is available.
+
+    Silent no-op (returns None) when collaboration is off/unavailable so callers
+    can transparently fall back to the Contents-API path."""
+    if not await _ensure_collab_probed():
+        return None
+    if notebook_name in _state.collab_rooms:
+        return _state.collab_rooms[notebook_name]
+    try:
+        room = _collab.CollabRoom(_state.jupyter_url, _state.jupyter_token, path)
+        await room.open()
+        _state.collab_rooms[notebook_name] = room
+        logger.info("ClawPyter: opened collaboration room for %s", path)
+        return room
+    except Exception as e:
+        logger.warning("ClawPyter: could not open collab room for %s: %s — falling back to REST", path, e)
+        return None
+
+
+async def _close_collab_room(notebook_name: str) -> None:
+    room = _state.collab_rooms.pop(notebook_name, None)
+    if room is not None:
+        await room.close()
+
+
+def _get_collab_room(notebook_name: Optional[str]):
+    if not notebook_name:
+        return None
+    return _state.collab_rooms.get(notebook_name)
+
+
+# ---------------------------------------------------------------------------
 # Tool handlers
 # ---------------------------------------------------------------------------
 
@@ -394,7 +463,11 @@ async def jupyter_connect_to_jupyter(args: dict, **kwargs) -> str:
         return "Error: jupyter_url is required"
     _state.jupyter_url = url.rstrip("/")
     _state.jupyter_token = token
-    return f"Connect to Jupyter: {url}\n\nConnected to Jupyter server at {url}"
+    # Reset cached collab probe so we re-probe the new server.
+    _state.collab_available = None
+    collab_ok = await _ensure_collab_probed()
+    mode = "collaborative (RTC)" if collab_ok else "REST (no jupyter-collaboration)"
+    return f"Connect to Jupyter: {url}\n\nConnected to Jupyter server at {url}\nEdit mode: {mode}"
 
 
 async def jupyter_list_files(args: dict, **kwargs) -> str:
@@ -530,6 +603,12 @@ async def jupyter_use_notebook(args: dict, **kwargs) -> str:
         info_lines.append(f"[INFO] Connected to kernel '{session['kernel']['id']}'.")
         info_lines.append(f"[INFO] Successfully activated notebook '{notebook_name}'.")
 
+    # Try to open a collaboration room so subsequent edits go through the
+    # CRDT layer.  Failure is non-fatal — we silently fall back to REST.
+    room = await _open_collab_room(notebook_name, notebook_path)
+    if room is not None:
+        info_lines.append("[INFO] Collaboration room open (live co-editing enabled).")
+
     try:
         nb = await _get_notebook(notebook_path)
         cells = nb.get("cells", [])
@@ -579,6 +658,7 @@ async def jupyter_unuse_notebook(args: dict, **kwargs) -> str:
     sess = _state.sessions.get(notebook_name)
     if not sess:
         return f"Unuse notebook: {notebook_name}\n\nNotebook '{notebook_name}' is not connected."
+    await _close_collab_room(notebook_name)
     await _delete_session(sess["session_id"])
     del _state.sessions[notebook_name]
     if _state.current_notebook == notebook_name:
@@ -603,7 +683,11 @@ async def jupyter_read_notebook(args: dict, **kwargs) -> str:
     start_index = int(args.get("start_index", 0))
     limit = int(args.get("limit", 20))
 
-    nb = await _get_notebook(sess["path"])
+    room = _get_collab_room(notebook_name)
+    if room is not None:
+        nb = room.to_nbformat()
+    else:
+        nb = await _get_notebook(sess["path"])
     cells = nb.get("cells", [])
     output = (
         f"Notebook {notebook_name} has {len(cells)} cells.\n\n"
@@ -623,29 +707,41 @@ async def jupyter_insert_cell(args: dict, **kwargs) -> str:
         return "Insert cell\n\nNo active notebook. Use jupyter_use_notebook first."
 
     sess = _state.sessions[current]
-    nb = await _get_notebook(sess["path"])
-    cells = nb.get("cells", [])
-    total = len(cells)
-
-    cell_index = int(args.get("cell_index", -1))
-    if cell_index < -1 or cell_index > total:
-        return (
-            f"Insert cell\n\n"
-            f"Index {cell_index} is outside valid range [-1, {total}]. Use -1 to append at end."
-        )
-    actual_index = total if cell_index == -1 else cell_index
+    room = _get_collab_room(current)
 
     cell_type = str(args.get("cell_type", "code"))
     cell_source = str(args.get("cell_source", ""))
+    cell_index = int(args.get("cell_index", -1))
 
-    new_cell = {"cell_type": cell_type, "source": cell_source, "metadata": {}}
-    if cell_type == "code":
-        new_cell["outputs"] = []
-        new_cell["execution_count"] = None
+    if room is not None:
+        total = room.cell_count()
+        if cell_index < -1 or cell_index > total:
+            return (
+                f"Insert cell\n\nIndex {cell_index} is outside valid range [-1, {total}]. "
+                "Use -1 to append at end."
+            )
+        actual_index = total if cell_index == -1 else cell_index
+        room.insert_cell(actual_index, cell_type, cell_source)
+        cells = room.to_nbformat().get("cells", [])
+    else:
+        nb = await _get_notebook(sess["path"])
+        cells = nb.get("cells", [])
+        total = len(cells)
+        if cell_index < -1 or cell_index > total:
+            return (
+                f"Insert cell\n\nIndex {cell_index} is outside valid range [-1, {total}]. "
+                "Use -1 to append at end."
+            )
+        actual_index = total if cell_index == -1 else cell_index
 
-    cells.insert(actual_index, new_cell)
-    nb["cells"] = cells
-    await _put_notebook(sess["path"], nb)
+        new_cell = {"cell_type": cell_type, "source": cell_source, "metadata": {}}
+        if cell_type == "code":
+            new_cell["outputs"] = []
+            new_cell["execution_count"] = None
+
+        cells.insert(actual_index, new_cell)
+        nb["cells"] = cells
+        await _put_notebook(sess["path"], nb)
 
     new_total = len(cells)
     start_ctx = max(0, actual_index - 5)
@@ -663,27 +759,35 @@ async def jupyter_overwrite_cell_source(args: dict, **kwargs) -> str:
         return "Overwrite cell\n\nNo active notebook. Use jupyter_use_notebook first."
 
     sess = _state.sessions[current]
-    nb = await _get_notebook(sess["path"])
-    cells = nb.get("cells", [])
-
+    room = _get_collab_room(current)
     cell_index = int(args.get("cell_index", 0))
-    if cell_index >= len(cells):
-        return (
-            f"Overwrite cell {cell_index}\n\n"
-            f"Cell index {cell_index} is out of range. Notebook has {len(cells)} cells."
-        )
-
-    cell = cells[cell_index]
-    old_source = cell.get("source", "")
     new_source = str(args.get("cell_source", ""))
 
-    cell["source"] = new_source
-    if cell.get("cell_type") == "code":
-        cell["outputs"] = []
-        cell["execution_count"] = None
-
-    nb["cells"] = cells
-    await _put_notebook(sess["path"], nb)
+    if room is not None:
+        total = room.cell_count()
+        if cell_index >= total:
+            return (
+                f"Overwrite cell {cell_index}\n\n"
+                f"Cell index {cell_index} is out of range. Notebook has {total} cells."
+            )
+        old_source = room.get_cell(cell_index).get("source", "")
+        room.set_cell_source(cell_index, new_source)
+    else:
+        nb = await _get_notebook(sess["path"])
+        cells = nb.get("cells", [])
+        if cell_index >= len(cells):
+            return (
+                f"Overwrite cell {cell_index}\n\n"
+                f"Cell index {cell_index} is out of range. Notebook has {len(cells)} cells."
+            )
+        cell = cells[cell_index]
+        old_source = cell.get("source", "")
+        cell["source"] = new_source
+        if cell.get("cell_type") == "code":
+            cell["outputs"] = []
+            cell["execution_count"] = None
+        nb["cells"] = cells
+        await _put_notebook(sess["path"], nb)
 
     diff = _diff_source(old_source, new_source)
     return f"Overwrite cell {cell_index}\n\n{diff}"
@@ -695,32 +799,60 @@ async def jupyter_execute_cell(args: dict, **kwargs) -> str:
         return "Execute cell\n\nNo active notebook. Use jupyter_use_notebook first."
 
     sess = _state.sessions[current]
-    nb = await _get_notebook(sess["path"])
-    cells = nb.get("cells", [])
-
+    room = _get_collab_room(current)
     cell_index = int(args.get("cell_index", 0))
-    if cell_index >= len(cells):
-        return (
-            f"Execute cell {cell_index}\n\n"
-            f"Cell index {cell_index} is out of range. Notebook has {len(cells)} cells."
-        )
 
-    cell = cells[cell_index]
-    if cell.get("cell_type") != "code":
-        return (
-            f"Execute cell {cell_index}\n\n"
-            f"Cell {cell_index} is not a code cell (type: {cell.get('cell_type')})."
-        )
+    if room is not None:
+        total = room.cell_count()
+        if cell_index >= total:
+            return (
+                f"Execute cell {cell_index}\n\n"
+                f"Cell index {cell_index} is out of range. Notebook has {total} cells."
+            )
+        cell_view = room.get_cell(cell_index)
+        if cell_view.get("cell_type") != "code":
+            return (
+                f"Execute cell {cell_index}\n\n"
+                f"Cell {cell_index} is not a code cell (type: {cell_view.get('cell_type')})."
+            )
+        source = cell_view.get("source", "")
+    else:
+        nb = await _get_notebook(sess["path"])
+        cells = nb.get("cells", [])
+        if cell_index >= len(cells):
+            return (
+                f"Execute cell {cell_index}\n\n"
+                f"Cell index {cell_index} is out of range. Notebook has {len(cells)} cells."
+            )
+        cell = cells[cell_index]
+        if cell.get("cell_type") != "code":
+            return (
+                f"Execute cell {cell_index}\n\n"
+                f"Cell {cell_index} is not a code cell (type: {cell.get('cell_type')})."
+            )
+        source = cell.get("source", "")
 
     timeout_s = float(args.get("timeout", 90))
-    outputs = await _execute_code_ws(sess["kernel_id"], cell.get("source", ""), timeout_s)
-
-    cell["outputs"] = [
+    outputs = await _execute_code_ws(sess["kernel_id"], source, timeout_s)
+    nb_outputs = [
         {"output_type": "stream", "name": "stdout", "text": t} for t in outputs
     ]
-    cell["execution_count"] = (cell.get("execution_count") or 0) + 1
-    nb["cells"] = cells
-    await _put_notebook(sess["path"], nb)
+
+    if room is not None:
+        # Compute next execution_count by scanning current YDoc cells
+        max_count = 0
+        for i in range(room.cell_count()):
+            c = room.get_cell(i)
+            if c.get("cell_type") == "code" and c.get("execution_count"):
+                max_count = max(max_count, int(c["execution_count"]))
+        room.write_outputs(cell_index, nb_outputs, max_count + 1)
+    else:
+        nb = await _get_notebook(sess["path"])
+        cells = nb.get("cells", [])
+        cells[cell_index]["outputs"] = nb_outputs
+        cells[cell_index]["execution_count"] = (cells[cell_index].get("execution_count") or 0) + 1
+        nb["cells"] = cells
+        await _put_notebook(sess["path"], nb)
 
     result = "\n".join(outputs)
     return f"Execute cell {cell_index}\n\n{result}"
@@ -732,44 +864,57 @@ async def jupyter_insert_execute_code_cell(args: dict, **kwargs) -> str:
         return "Insert + execute code cell\n\nNo active notebook. Use jupyter_use_notebook first."
 
     sess = _state.sessions[current]
-    nb = await _get_notebook(sess["path"])
-    cells = nb.get("cells", [])
-    total = len(cells)
-
+    room = _get_collab_room(current)
     cell_index = int(args.get("cell_index", -1))
-    if cell_index < -1 or cell_index > total:
-        return (
-            "Insert + execute code cell\n\n"
-            f"Index {cell_index} is outside valid range [-1, {total}]. Use -1 to append at end."
-        )
-    actual_index = total if cell_index == -1 else cell_index
-
     cell_source = str(args.get("cell_source", ""))
-    new_cell = {
-        "cell_type": "code",
-        "source": cell_source,
-        "metadata": {},
-        "outputs": [],
-        "execution_count": None,
-    }
-    cells.insert(actual_index, new_cell)
-    nb["cells"] = cells
-    await _put_notebook(sess["path"], nb)
+
+    if room is not None:
+        total = room.cell_count()
+        if cell_index < -1 or cell_index > total:
+            return (
+                "Insert + execute code cell\n\n"
+                f"Index {cell_index} is outside valid range [-1, {total}]. Use -1 to append at end."
+            )
+        actual_index = total if cell_index == -1 else cell_index
+        room.insert_cell(actual_index, "code", cell_source)
+    else:
+        nb = await _get_notebook(sess["path"])
+        cells = nb.get("cells", [])
+        total = len(cells)
+        if cell_index < -1 or cell_index > total:
+            return (
+                "Insert + execute code cell\n\n"
+                f"Index {cell_index} is outside valid range [-1, {total}]. Use -1 to append at end."
+            )
+        actual_index = total if cell_index == -1 else cell_index
+        new_cell = {
+            "cell_type": "code",
+            "source": cell_source,
+            "metadata": {},
+            "outputs": [],
+            "execution_count": None,
+        }
+        cells.insert(actual_index, new_cell)
+        nb["cells"] = cells
+        await _put_notebook(sess["path"], nb)
 
     timeout_s = float(args.get("timeout", 90))
     outputs = await _execute_code_ws(sess["kernel_id"], cell_source, timeout_s)
+    nb_outputs = [
+        {"output_type": "stream", "name": "stdout", "text": t} for t in outputs
+    ]
 
-    # Re-fetch to avoid stale state when writing outputs back
-    fresh_nb = await _get_notebook(sess["path"])
-    fresh_cells = fresh_nb.get("cells", [])
-    if actual_index < len(fresh_cells):
-        inserted = fresh_cells[actual_index]
-        inserted["outputs"] = [
-            {"output_type": "stream", "name": "stdout", "text": t} for t in outputs
-        ]
-        inserted["execution_count"] = 1
-        fresh_nb["cells"] = fresh_cells
-        await _put_notebook(sess["path"], fresh_nb)
+    if room is not None:
+        room.write_outputs(actual_index, nb_outputs, 1)
+    else:
+        fresh_nb = await _get_notebook(sess["path"])
+        fresh_cells = fresh_nb.get("cells", [])
+        if actual_index < len(fresh_cells):
+            inserted = fresh_cells[actual_index]
+            inserted["outputs"] = nb_outputs
+            inserted["execution_count"] = 1
+            fresh_nb["cells"] = fresh_cells
+            await _put_notebook(sess["path"], fresh_nb)
 
     result = "\n".join([
         f"Cell inserted at index {actual_index} and executed.",
@@ -785,17 +930,27 @@ async def jupyter_read_cell(args: dict, **kwargs) -> str:
         return "Read cell\n\nNo active notebook. Use jupyter_use_notebook first."
 
     sess = _state.sessions[current]
-    nb = await _get_notebook(sess["path"])
-    cells = nb.get("cells", [])
-
+    room = _get_collab_room(current)
     cell_index = int(args.get("cell_index", 0))
-    if cell_index >= len(cells):
-        return (
-            f"Read cell {cell_index}\n\n"
-            f"Cell index {cell_index} is out of range. Notebook has {len(cells)} cells."
-        )
 
-    cell = cells[cell_index]
+    if room is not None:
+        total = room.cell_count()
+        if cell_index >= total:
+            return (
+                f"Read cell {cell_index}\n\n"
+                f"Cell index {cell_index} is out of range. Notebook has {total} cells."
+            )
+        cell = room.get_cell(cell_index)
+    else:
+        nb = await _get_notebook(sess["path"])
+        cells = nb.get("cells", [])
+        if cell_index >= len(cells):
+            return (
+                f"Read cell {cell_index}\n\n"
+                f"Cell index {cell_index} is out of range. Notebook has {len(cells)} cells."
+            )
+        cell = cells[cell_index]
+
     include_outputs = args.get("include_outputs", True)
 
     lines = [
@@ -808,10 +963,10 @@ async def jupyter_read_cell(args: dict, **kwargs) -> str:
     if include_outputs and cell.get("cell_type") == "code" and cell.get("outputs"):
         lines.append("Outputs:")
         for out in cell["outputs"]:
-            text = out.get("text")
+            text = out.get("text") if isinstance(out, dict) else None
             if text:
                 lines.append("".join(text) if isinstance(text, list) else text)
-            elif out.get("data"):
+            elif isinstance(out, dict) and out.get("data"):
                 plain = out["data"].get("text/plain")
                 if plain:
                     lines.append(str(plain))
@@ -825,26 +980,35 @@ async def jupyter_delete_cell(args: dict, **kwargs) -> str:
         return "Delete cells\n\nNo active notebook. Use jupyter_use_notebook first."
 
     sess = _state.sessions[current]
-    nb = await _get_notebook(sess["path"])
-    cells = nb.get("cells", [])
+    room = _get_collab_room(current)
 
     raw_indices = args.get("cell_indices", [])
     include_source = args.get("include_source", True)
-
-    # Sort descending to avoid index shifting
     indices = sorted([int(i) for i in raw_indices], reverse=True)
     deleted_sources = []
 
-    for idx in indices:
-        if 0 <= idx < len(cells):
-            if include_source:
-                deleted_sources.append(f"[{idx}] {cells[idx].get('source', '')}")
-            cells.pop(idx)
+    if room is not None:
+        total = room.cell_count()
+        for idx in indices:
+            if 0 <= idx < total:
+                snap = room.delete_cell(idx)
+                if include_source:
+                    deleted_sources.append(f"[{idx}] {snap.get('source', '')}")
+                total -= 1
+        remaining = room.cell_count()
+    else:
+        nb = await _get_notebook(sess["path"])
+        cells = nb.get("cells", [])
+        for idx in indices:
+            if 0 <= idx < len(cells):
+                if include_source:
+                    deleted_sources.append(f"[{idx}] {cells[idx].get('source', '')}")
+                cells.pop(idx)
+        nb["cells"] = cells
+        await _put_notebook(sess["path"], nb)
+        remaining = len(cells)
 
-    nb["cells"] = cells
-    await _put_notebook(sess["path"], nb)
-
-    result_lines = [f"Deleted {len(indices)} cell(s). Notebook now has {len(cells)} cells."]
+    result_lines = [f"Deleted {len(indices)} cell(s). Notebook now has {remaining} cells."]
     if include_source and deleted_sources:
         result_lines.append("Deleted cell sources:")
         result_lines.extend(deleted_sources)

@@ -103,6 +103,27 @@ After activation, call `jupyter_list_notebooks` to confirm the notebook is activ
 
 ---
 
+## Co-editing with a human
+
+If the Jupyter server has `jupyter-collaboration` installed (and you have
+`jupyter_nbmodel_client` + `pycrdt` on the Hermes side), ClawPyter opens a
+shared Y.js CRDT room for each notebook you activate. Practical consequences:
+
+- A human watching the notebook in JupyterLab sees your edits land cell-by-cell
+  in real time. Likewise, **the user may edit the same notebook while you are
+  working** — your next `jupyter_read_notebook` or `jupyter_read_cell` will see
+  their latest edits without you having to refetch the file.
+- Therefore: when the user mentions they "just changed something," do not
+  blindly overwrite — call `jupyter_read_notebook` or `jupyter_read_cell` first
+  and merge intelligently.
+- If the server does not have `jupyter-collaboration`, ClawPyter silently falls
+  back to whole-notebook PUTs. In that mode, the user should not edit the
+  notebook in their browser while you are working — last writer wins. When in
+  doubt, the `jupyter_connect_to_jupyter` response tells you which mode is
+  active.
+
+---
+
 ## Compatibility wrappers (`_compat` tools)
 
 Three tools have a `_compat` version: `jupyter_restart_notebook_compat`, `jupyter_unuse_notebook_compat`, and `jupyter_read_notebook_compat`.

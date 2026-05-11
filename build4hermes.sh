@@ -7,6 +7,11 @@ PLUGIN_DEST="$HOME/.hermes/plugins/clawpyter"
 echo "==> Installing Python dependencies (httpx, websockets)..."
 pip install --quiet httpx websockets
 
+echo "==> Installing optional jupyter-collaboration dependencies..."
+echo "    (skip on failure — ClawPyter falls back to REST mode if missing)"
+pip install --quiet jupyter_nbmodel_client pycrdt || \
+  echo "    WARNING: collaboration deps not installed; ClawPyter will run in REST mode only."
+
 echo "==> Copying plugin to $PLUGIN_DEST..."
 rm -rf "$PLUGIN_DEST"
 cp -r "$PLUGIN_SRC" "$PLUGIN_DEST"

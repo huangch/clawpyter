@@ -69,12 +69,25 @@ User (in OpenClaw or Hermes chat)
 
 ClawPyter communicates directly with JupyterLab's REST API for file and session management, and uses WebSocket kernel channels for code execution. There is no intermediate MCP server.
 
+**Co-editing with a live JupyterLab session.** When the optional
+`jupyter-collaboration` server extension and the Hermes-side `jupyter_nbmodel_client`
+package are installed, ClawPyter automatically routes notebook edits through the
+shared Y.js CRDT document (`/api/collaboration/room/...`) instead of the Contents
+API. A human reading the same notebook in their browser sees the agent's edits
+appear live, and the agent sees the human's edits — no clobbering. If either
+dependency is missing, ClawPyter silently falls back to the non-collaborative
+read-modify-write path. Set `JUPYTER_COLLAB_MODE=off` to force the legacy path.
+
+> **Note:** Live co-editing is currently implemented only in the **Hermes** plugin
+> (`hermes-plugin/`). The OpenClaw plugin (`openclaw-plugin/`) still uses the
+> Contents-API path; co-editing support there is planned for a future release.
+
 **Key files:**
 - **`openclaw-plugin/src/index.ts`** — TypeScript plugin. Registers all 20 tools with OpenClaw.
 - **`openclaw-plugin/src/jupyter-client.ts`** — `JupyterDirectClient` class. REST API + WebSocket client (TypeScript).
 - **`openclaw-plugin/skills/clawpyter/SKILL.md`** — Operating instructions for the AI (OpenClaw).
 - **`hermes-plugin/`** — Python plugin for Hermes Agent (mirrors all 20 tools).
-- **`hermes-plugin/skill.md`** — Operating instructions for the AI (Hermes).
+- **`hermes-plugin/SKILL.md`** — Operating instructions for the AI (Hermes).
 
 ---
 
@@ -82,6 +95,12 @@ ClawPyter communicates directly with JupyterLab's REST API for file and session 
 
 **Common (both agents):**
 - **JupyterLab** 4.x with a Python kernel: `pip install jupyterlab ipykernel`
+- **Optional — for live human + agent co-editing (Hermes only):**
+  `pip install jupyter-collaboration` (server-side extension) plus, on the
+  Hermes side, `pip install jupyter_nbmodel_client pycrdt`. Without these,
+  ClawPyter still works but operates in non-collaborative mode (whole-notebook
+  read-modify-write through the Contents API). The OpenClaw plugin always uses
+  the non-collaborative path regardless of these dependencies.
 
 **For OpenClaw:**
 - **OpenClaw** installed and running ([openclaw.ai](https://openclaw.ai))
@@ -91,6 +110,9 @@ ClawPyter communicates directly with JupyterLab's REST API for file and session 
 - **Hermes Agent** installed ([github.com/NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent))
 - **Python 3.9+** with **pip**
 - `pip install httpx websockets` (handled automatically by `build4hermes.sh`)
+- *Optional:* `pip install jupyter_nbmodel_client pycrdt` for real-time co-editing
+  with a live JupyterLab session (also attempted by `build4hermes.sh`; failures
+  are non-fatal and ClawPyter falls back to non-collaborative mode).
 
 ---
 
@@ -136,6 +158,7 @@ The plugin is discovered by Hermes at startup. If Hermes is already running, res
 | `JUPYTER_TOKEN` | _(empty)_ | Authentication token |
 | `JUPYTER_TIMEOUT_MS` | `30000` | Request timeout in ms |
 | `JUPYTER_DEFAULT_NOTEBOOK` | `Untitled` | Default notebook name for `jupyter_create_notebook` |
+| `JUPYTER_COLLAB_MODE` | `auto` | `auto` (probe & prefer RTC), `on` (require RTC), or `off` (always REST) |
 
 ```bash
 export JUPYTER_URL=http://127.0.0.1:8888
@@ -638,7 +661,7 @@ clawpyter/
 │   ├── __init__.py           # register(ctx) — wires tools and installs skill
 │   ├── schemas.py            # OpenAI-format tool schemas for all 20 tools
 │   ├── tools.py              # Python Jupyter client (mirrors JupyterDirectClient)
-│   └── skill.md              # Skill file auto-installed to ~/.hermes/skills/clawpyter/
+│   └── SKILL.md              # Skill file auto-installed to ~/.hermes/skills/clawpyter/
 ├── skills/
 │   └── clawpyter/
 │       └── SKILL.md          # Operating instructions for the AI (shared)

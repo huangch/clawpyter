@@ -38,7 +38,7 @@ def _install_skill() -> None:
     if dest.exists():
         return  # Don't overwrite user edits
 
-    source = Path(__file__).parent / "skill.md"
+    source = Path(__file__).parent / "SKILL.md"
     if source.exists():
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, dest)
