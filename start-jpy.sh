@@ -8,11 +8,14 @@
 #   -p <port>            Optional, desired port (default: 8888). If specified and
 #                        occupied, the script will exit with an error instead of
 #                        trying another port.
-#   -t <jupyter_token>   Optional, defaults to a freshly generated UUID
+#   -t <jupyter_token>   Optional, defaults to a freshly generated UUID.
+#                        Pass -t none (or -t "") to disable token
+#                        authentication entirely.
 # ---------------------------------------------------------------
 
 NOTEBOOK_DIR=""
 JUPYTER_TOKEN=""
+TOKEN_PROVIDED=false
 DESIRED_PORT=""
 OPEN_BROWSER=false
 
@@ -21,17 +24,33 @@ while getopts ":hbn:p:t:" opt; do
 		b) OPEN_BROWSER=true ;;
 		n) NOTEBOOK_DIR="$OPTARG" ;;
 		p) DESIRED_PORT="$OPTARG" ;;
-		t) JUPYTER_TOKEN="$OPTARG" ;;
+		t) if [[ "$OPTARG" == -* ]]; then
+				# getopts would otherwise swallow the next flag (e.g. -p) as
+				# the token value.
+				echo "Error: -t looks like it was given another flag ('$OPTARG') as its token." >&2
+				echo "Use -t none for no token, or -t <token> for an explicit token." >&2
+				exit 1
+			fi
+		   JUPYTER_TOKEN="$OPTARG"
+		   TOKEN_PROVIDED=true ;;
 		h) echo "Usage: $0 -n <notebook_directory> [-b] [-p <port>] [-t <jupyter_token>]"
 		   echo "";
 		   echo "Options:";
 		   echo "  -b          Open browser when Jupyter server starts";
 		   echo "  -p <port>   Desired port (default: 8888). Fails if port is already in use.";
+		   echo "  -t <token>  Jupyter token (default: freshly generated UUID).";
+		   echo "              Special values that disable token authentication:";
+		   echo "                -t none    (recommended)";
+		   echo "                -t \"\"     (empty string also works)";
+		   echo "              When authentication is disabled, anyone who can";
+		   echo "              reach the server URL can use Jupyter — only do";
+		   echo "              this on trusted networks.";
 		   echo "";
 		   echo "Examples:";
 		   echo "  $0 -n ~/.openclaw/jupyter_home";
 		   echo "  $0 -n ~/.openclaw/jupyter_home -p 8889";
 		   echo "  $0 -n ~/.openclaw/jupyter_home -b -p 9000 -t abcdef123456";
+		   echo "  $0 -n ~/.openclaw/jupyter_home -t none    # no token / no authentication";
 		   exit 0 ;;
 		\?) echo "Invalid option: -$OPTARG" >&2; exit 1 ;;
 		:) echo "Option -$OPTARG requires an argument." >&2; exit 1 ;;
@@ -81,11 +100,19 @@ generate_uuid() {
 	fi
 }
 
-# If token not supplied, generate a UUID using the helper above
-if [ -z "$JUPYTER_TOKEN" ]; then
+# Special token values: "none" (or an empty string) means no authentication.
+if [ "$JUPYTER_TOKEN" = "none" ]; then
+	JUPYTER_TOKEN=""
+fi
+# If -t was not supplied at all, generate a UUID using the helper above.
+if [ "$TOKEN_PROVIDED" = false ] && [ -z "$JUPYTER_TOKEN" ]; then
 	JUPYTER_TOKEN=$(generate_uuid)
 fi
-JUPYTER_IP=$(ip -4 route get 1.1.1.1 | grep -oP 'src \K\S+')
+# Best-effort: detect the IP other machines would use to reach this host.
+# Falls back to localhost when the machine has no default route (containers,
+# some VPN setups) — `ip` would otherwise leave the variable empty.
+JUPYTER_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+')
+JUPYTER_IP="${JUPYTER_IP:-127.0.0.1}"
 
 # export BROWSER=/usr/bin/microsoft-edge
 
@@ -97,9 +124,12 @@ JUPYTER_IP=$(ip -4 route get 1.1.1.1 | grep -oP 'src \K\S+')
 is_port_in_use() {
 	local port=$1
 	if command -v ss >/dev/null 2>&1; then
-		ss -tln 2>/dev/null | grep -q ":${port} "
+		# Match the port at the end of the local-address field (column 4).
+		# A naive `grep ":$port "` misses because ss output has no trailing
+		# space after the port. `-v p=...` passes the port into awk.
+		ss -tln 2>/dev/null | awk -v p="$port" '{n=split($4, a, ":"); if (a[n] == p) found=1} END {exit !found}'
 	elif command -v netstat >/dev/null 2>&1; then
-		netstat -tln 2>/dev/null | grep -q ":${port} "
+		netstat -tln 2>/dev/null | awk -v p="$port" '{n=split($4, a, ":"); if (a[n] == p) found=1} END {exit !found}'
 	else
 		# Fallback: try opening a TCP connection
 		(echo >/dev/tcp/127.0.0.1/"$port") 2>/dev/null
@@ -148,10 +178,13 @@ if [ "$OPEN_BROWSER" = false ]; then
 	NO_BROWSER_FLAG="--no-browser"
 fi
 
+# An empty token (i.e. -t "") disables token authentication in Jupyter.
+TOKEN_FLAG="--IdentityProvider.token=${JUPYTER_TOKEN}"
+
 echo jupyter lab \
 	${NO_BROWSER_FLAG:+"$NO_BROWSER_FLAG"} \
 	--ServerApp.root_dir="$NOTEBOOK_DIR" \
-	--IdentityProvider.token=${JUPYTER_TOKEN} \
+	"$TOKEN_FLAG" \
 	--ip=0.0.0.0 \
 	--port $JUPYTER_PORT \
 	--ServerApp.port_retries=$PORT_RETRIES
@@ -160,7 +193,7 @@ echo jupyter lab \
 jupyter lab \
 	$NO_BROWSER_FLAG \
 	--ServerApp.root_dir="$NOTEBOOK_DIR" \
-	--IdentityProvider.token=${JUPYTER_TOKEN} \
+	"$TOKEN_FLAG" \
 	--ip=0.0.0.0 \
 	--port $JUPYTER_PORT \
 	--ServerApp.port_retries=$PORT_RETRIES \
@@ -202,10 +235,26 @@ if [ "$ACTUAL_PORT" != "$JUPYTER_PORT" ]; then
 	echo "Note: Jupyter bound to port $ACTUAL_PORT (requested $JUPYTER_PORT)"
 fi
 
-# Wait for Jupyter to respond on the actual port.
-until curl -s http://127.0.0.1:$ACTUAL_PORT >/dev/null; do
+# Wait for Jupyter to respond on the actual port (bounded — fail with log
+# contents if the process dies or never comes up within 60 s).
+READY=false
+for i in $(seq 1 60); do
+	if curl -s http://127.0.0.1:$ACTUAL_PORT >/dev/null 2>&1; then
+		READY=true
+		break
+	fi
+	if ! kill -0 "$JLAB_PID" 2>/dev/null; then
+		echo "Error: Jupyter Lab process (PID $JLAB_PID) exited during startup." >&2
+		cat "$LOG_FILE" >&2
+		exit 1
+	fi
 	sleep 1
 done
+if [ "$READY" = false ]; then
+	echo "Error: Jupyter Lab did not respond on port $ACTUAL_PORT within 60 s." >&2
+	cat "$LOG_FILE" >&2
+	exit 1
+fi
 
 # ---------------------------------------------------------------------
 # Detect whether jupyter-collaboration (Y.js RTC) is enabled. ClawPyter's
@@ -213,8 +262,12 @@ done
 # user know up-front whether human + agent co-editing will work.
 # ---------------------------------------------------------------------
 COLLAB_PROBE_URL="http://127.0.0.1:$ACTUAL_PORT/api/collaboration/session/Untitled.ipynb"
+COLLAB_AUTH=()
+if [ -n "$JUPYTER_TOKEN" ]; then
+	COLLAB_AUTH=(-H "Authorization: token $JUPYTER_TOKEN")
+fi
 COLLAB_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-	-H "Authorization: token $JUPYTER_TOKEN" \
+	"${COLLAB_AUTH[@]}" \
 	-H "Content-Type: application/json" \
 	-d '{"format":"json","type":"notebook"}' \
 	"$COLLAB_PROBE_URL" 2>/dev/null || echo "000")
@@ -226,17 +279,29 @@ fi
 
 
 echo
-echo \# ---------------------------------------------------------------------------
-echo \# URL to access Jupyter Lab \(with token for authentication\)
-echo \# ---------------------------------------------------------------------------
-echo http://$JUPYTER_IP:$ACTUAL_PORT/?token=$JUPYTER_TOKEN
+if [ -n "$JUPYTER_TOKEN" ]; then
+	echo \# ---------------------------------------------------------------------------
+	echo \# URL to access Jupyter Lab \(with token for authentication\)
+	echo \# ---------------------------------------------------------------------------
+	echo http://$JUPYTER_IP:$ACTUAL_PORT/?token=$JUPYTER_TOKEN
+	echo
+	echo \# ---------------------------------------------------------------------------
+	echo \# Tell the AI to connect with:
+	echo \# ---------------------------------------------------------------------------
+	echo "Connect to Jupyter at http://$JUPYTER_IP:$ACTUAL_PORT with token $JUPYTER_TOKEN"
+else
+	echo \# ---------------------------------------------------------------------------
+	echo \# URL to access Jupyter Lab \(no token required\)
+	echo \# ---------------------------------------------------------------------------
+	echo http://$JUPYTER_IP:$ACTUAL_PORT/
+	echo
+	echo \# ---------------------------------------------------------------------------
+	echo \# Tell the AI to connect with:
+	echo \# ---------------------------------------------------------------------------
+	echo "Connect to Jupyter at http://$JUPYTER_IP:$ACTUAL_PORT (no token)"
+fi
 echo
 echo \# ---------------------------------------------------------------------------
 echo \# jupyter-collaboration: $COLLAB_MODE
 echo \# ---------------------------------------------------------------------------
-echo
-echo \# ---------------------------------------------------------------------------
-echo \# Tell the AI to connect with:
-echo \# ---------------------------------------------------------------------------
-echo "Connect to Jupyter at http://$JUPYTER_IP:$ACTUAL_PORT with token $JUPYTER_TOKEN"
 echo

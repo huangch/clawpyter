@@ -1,0 +1,21 @@
+# Jupyter state / secrets — never commit
+.jupyter_ystore.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Node / build output
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Logs
+*.log
+
+# OS cruft
+.DS_Store
