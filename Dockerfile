@@ -59,7 +59,7 @@ RUN pip install --no-cache-dir \
 # present before the image is baked.
 RUN jupyter lab --version >/dev/null \
  && python -c "import jupyter_nbmodel_client, pycrdt; print('collab client OK')" \
- && jupyter server extension list 2>&1 | grep -qi 'jupyter_collaboration' \
+ && jupyter server extension list 2>&1 | grep -qi 'jupyter_server_ydoc' \
  && echo "jupyter-collaboration enabled"
 
 # Non-root user. uid 1000 matches the siblings and is remapped at RUN time by

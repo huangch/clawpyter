@@ -160,7 +160,9 @@ if ! command -v jupyter >/dev/null 2>&1; then
         exit 1
 fi
 
-if ! jupyter server extension list 2>&1 | grep -qi 'jupyter_collaboration'; then
+# The pip package is `jupyter-collaboration`; the extension it registers is
+# named `jupyter_server_ydoc`.
+if ! jupyter server extension list 2>&1 | grep -qi 'jupyter_server_ydoc'; then
         echo "Error: jupyter-collaboration is not installed in this environment." >&2
         echo "       Live human + agent co-editing requires it; without it every" >&2
         echo "       notebook falls back to whole-file PUTs (last writer wins)." >&2

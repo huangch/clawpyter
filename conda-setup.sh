@@ -168,8 +168,10 @@ sys.exit(0 if getattr(m, 'HAS_COLLAB', False) else 1)
 smoke "jupyter on PATH"         command -v jupyter
 smoke "jupyter lab --version"   jupyter lab --version
 # Without the SERVER extension /api/collaboration 404s and co-editing is off.
+# The pip package is `jupyter-collaboration`, but the server extension it
+# registers is named `jupyter_server_ydoc`.
 smoke "jupyter-collaboration enabled" \
-        bash -c "jupyter server extension list 2>&1 | grep -qi jupyter_collaboration"
+        bash -c "jupyter server extension list 2>&1 | grep -qi jupyter_server_ydoc"
 
 if [ "${DO_DEV}" -eq 1 ]; then
     smoke "pytest importable (dev)" python -c 'import pytest'

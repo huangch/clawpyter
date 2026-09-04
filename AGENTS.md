@@ -38,7 +38,14 @@ packaged twice:
 ./build4hermes.sh        # pip deps + copy hermes-plugin/ -> ~/.hermes/plugins/clawpyter/
 ./build4openclaw.sh      # npm install + build, then `openclaw plugins install -l`
 ./docker-build-push.sh   # build clawpyter:latest -> push huangchtw/clawpyter:latest
+./clawpyter-docker-run.sh <notebook_dir>   # host-side: start the container
 ```
+
+- Script naming rule: a `docker-` PREFIX means the script is baked into the
+  image and runs inside it (`docker-entrypoint.sh`, `docker-jupyter-start.sh`);
+  host-side wrappers are `<package>-docker-run.sh`, matching wsinsight,
+  sptxinsight and hplot. `docker-build-push.sh` is the one host-side exception,
+  and is named identically across all the sibling repos.
 
 - `build4hermes.sh` does `rm -rf` of the destination before copying — re-run it after **every**
   change to `hermes-plugin/` (the deployed copy otherwise goes stale).

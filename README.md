@@ -274,7 +274,15 @@ the host environment.
 ```bash
 ./docker-build-push.sh      # or: docker build -t clawpyter:latest .
 
-docker run --rm -p 8888:8888 -v "$PWD":/workspace clawpyter:latest
+./clawpyter-docker-run.sh ~/notebooks
+```
+
+`clawpyter-docker-run.sh` is the host-side wrapper (the same shape as
+`hplot-docker-run.sh` and friends). The equivalent raw command is:
+
+```bash
+docker run --rm -it --init -e HOST_UID -e HOST_GID \
+    -p 8888:8888 -v ~/notebooks:/workspace clawpyter:latest
 ```
 
 The mounted directory becomes `/workspace` inside the container and is
@@ -295,8 +303,9 @@ Token handling matches `start-jpy.sh`:
 | any value | used verbatim |
 
 ```bash
-docker run --rm -p 8888:8888 -e JUPYTER_TOKEN=secret \
-    -v "$PWD":/workspace clawpyter:latest
+./clawpyter-docker-run.sh -t secret ~/notebooks     # fixed token
+./clawpyter-docker-run.sh -p 8899 -t none ~/notebooks   # other port, no auth
+./clawpyter-docker-run.sh ~/notebooks bash          # shell instead of the server
 ```
 
 **File ownership.** The container starts as root, remaps its built-in `user`
@@ -738,8 +747,9 @@ clawpyter/
 ├── start-jpy.sh                      # Start JupyterLab (token, port, browser options)
 ├── stop-jpy.sh                       # Stop JupyterLab (by port or interactive menu)
 ├── Dockerfile                        # JupyterLab server image, collaboration enabled
-├── docker-jupyter-start.sh           # Container launch logic (token handling)
-├── docker-entrypoint.sh              # uid/gid remap; identical across the sibling repos
+├── clawpyter-docker-run.sh           # HOST: start the container (port, token, mount)
+├── docker-jupyter-start.sh           # IN-IMAGE: container CMD; token handling
+├── docker-entrypoint.sh              # IN-IMAGE: uid/gid remap; identical across siblings
 ├── docker-build-push.sh              # Build clawpyter:latest and push huangchtw/clawpyter
 ├── .dockerignore
 ├── ATTRIBUTIONS.md

@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Launch JupyterLab inside the ClawPyter container.
+# Runs INSIDE the container as its CMD — this does not start a container.
+# To start one from the host, use ./clawpyter-docker-run.sh.
+#
+# (Naming rule, same as docker-entrypoint.sh: a `docker-` prefix marks scripts
+# baked into the image; host-side wrappers are named <package>-docker-run.sh.)
 #
 # Token semantics mirror start-jpy.sh so the container and the host script
 # behave identically:
