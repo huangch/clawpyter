@@ -1,0 +1,55 @@
+# The image copies only docker-entrypoint.sh and docker-jupyter-start.sh — the
+# agent plugins are installed into the AGENT's environment, never into the
+# notebook server image. Everything else is excluded to keep the context small.
+
+# Git metadata — never needed in the image, and it dominates the context.
+.git/
+.gitignore
+
+# Agent plugins (belong in ~/.hermes/plugins or the OpenClaw plugin dir).
+hermes-plugin/
+openclaw-plugin/
+
+# Rendered documentation and repo prose.
+docs/
+*.md
+
+# Host-side tooling, not used inside the container.
+conda-setup.sh
+start-jpy.sh
+stop-jpy.sh
+build4hermes.sh
+build4openclaw.sh
+docker-build-push.sh
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Notebooks and data that may sit in a working tree
+.ipynb_checkpoints
+*.ipynb
+*.csv
+*.h5
+*.png
+*.jpg
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editor / IDE
+.idea/
+.vscode/

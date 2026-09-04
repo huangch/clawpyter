@@ -148,11 +148,27 @@ else
 	PORT_RETRIES=50  # Jupyter default: auto-find next free port
 fi
 
-# PID and log files are keyed on port to support multiple simultaneous instances.
-PID_FILE="/tmp/jupyterlab-${JUPYTER_PORT}.pid"
-LOG_FILE="/tmp/jupyterlab-${JUPYTER_PORT}.log"
+# ---------------------------------------------------------------
+# Preflight. Both checks are fatal: a server that starts without
+# jupyter-collaboration silently degrades every notebook to REST
+# (last-writer-wins), which is exactly the failure ClawPyter must not have.
+# ---------------------------------------------------------------
+if ! command -v jupyter >/dev/null 2>&1; then
+        echo "Error: 'jupyter' is not on PATH." >&2
+        echo "       Activate the ClawPyter environment first:  conda activate <env>" >&2
+        echo "       Create one with:                          ./conda-setup.sh <env>" >&2
+        exit 1
+fi
 
-# Stop any existing Jupyter Lab process on this port.
+if ! jupyter server extension list 2>&1 | grep -qi 'jupyter_collaboration'; then
+        echo "Error: jupyter-collaboration is not installed in this environment." >&2
+        echo "       Live human + agent co-editing requires it; without it every" >&2
+        echo "       notebook falls back to whole-file PUTs (last writer wins)." >&2
+        echo "       Install it with:  pip install 'jupyter-collaboration>=4.0'" >&2
+        echo "       or re-run:        ./conda-setup.sh <env>" >&2
+        exit 1
+fi
+
 if [ -f "$PID_FILE" ]; then
 	JLAB_PID=$(cat "$PID_FILE")
 	if kill -0 "$JLAB_PID" 2>/dev/null; then
@@ -169,9 +185,9 @@ fi
 # Remove any stale PID/log files before starting a new instance.
 rm -f "$PID_FILE" "$LOG_FILE"
 
-# Start Jupyter Lab inside the conda environment in the background. The PID of
-# the wrapper process returned by `conda run` is not the actual Jupyter server
-# PID, so we later locate the real process with `pgrep`.
+# Start Jupyter Lab in the background, using whichever `jupyter` is on PATH —
+# i.e. the currently activated conda environment. $! is therefore the real
+# server PID (no `conda run` wrapper sits in between).
 
 NO_BROWSER_FLAG=""
 if [ "$OPEN_BROWSER" = false ]; then
@@ -274,7 +290,9 @@ COLLAB_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
 if [ "$COLLAB_STATUS" = "200" ] || [ "$COLLAB_STATUS" = "201" ]; then
 	COLLAB_MODE="ENABLED (live human + agent co-editing supported)"
 else
-	COLLAB_MODE="DISABLED — install with: pip install jupyter-collaboration && restart"
+	# The extension was present at preflight, so a failure here means the API
+	# itself is not answering — a broken server, not a missing package.
+	COLLAB_MODE="ERROR — extension is installed but /api/collaboration returned HTTP $COLLAB_STATUS"
 fi
 
 

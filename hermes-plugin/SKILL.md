@@ -120,7 +120,10 @@ shared Y.js CRDT room for each notebook you activate. Practical consequences:
   back to whole-notebook PUTs. In that mode, the user should not edit the
   notebook in their browser while you are working — last writer wins. When in
   doubt, the `jupyter_connect_to_jupyter` response tells you which mode is
-  active.
+  active. Servers created by ClawPyter's own tooling (`./start-jpy.sh` or the
+  `clawpyter` Docker image) always have it — `start-jpy.sh` refuses to launch
+  without it — so REST mode normally means you were pointed at a foreign
+  Jupyter server.
 
 ---
 

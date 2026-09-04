@@ -94,13 +94,16 @@ read-modify-write path. Set `JUPYTER_COLLAB_MODE=off` to force the legacy path.
 ## Prerequisites
 
 **Common (both agents):**
-- **JupyterLab** 4.x with a Python kernel: `pip install jupyterlab ipykernel`
-- **Optional — for live human + agent co-editing (Hermes only):**
-  `pip install jupyter-collaboration` (server-side extension) plus, on the
-  Hermes side, `pip install jupyter_nbmodel_client pycrdt`. Without these,
-  ClawPyter still works but operates in non-collaborative mode (whole-notebook
-  read-modify-write through the Contents API). The OpenClaw plugin always uses
-  the non-collaborative path regardless of these dependencies.
+- **JupyterLab** 4.x with a Python kernel
+- **`jupyter-collaboration`** (server-side extension) and, on the agent side,
+  **`jupyter_nbmodel_client`** + **`pycrdt`**. These are **required**, not
+  optional: live human + agent co-editing is the point of ClawPyter, and
+  without them every notebook silently degrades to whole-file
+  read-modify-write (last writer wins).
+
+`./conda-setup.sh` installs all of it in one step, and `./start-jpy.sh` refuses
+to start a server that is missing the collaboration extension. The OpenClaw
+plugin still uses the non-collaborative path regardless.
 
 **For OpenClaw:**
 - **OpenClaw** installed and running ([openclaw.ai](https://openclaw.ai))
@@ -108,21 +111,29 @@ read-modify-write path. Set `JUPYTER_COLLAB_MODE=off` to force the legacy path.
 
 **For Hermes Agent:**
 - **Hermes Agent** installed ([github.com/NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent))
-- **Python 3.9+** with **pip**
-- `pip install httpx websockets` (handled automatically by `build4hermes.sh`)
-- *Optional:* `pip install jupyter_nbmodel_client pycrdt` for real-time co-editing
-  with a live JupyterLab session (also attempted by `build4hermes.sh`; failures
-  are non-fatal and ClawPyter falls back to non-collaborative mode).
+- **Python 3.11+** with **pip**
+- `httpx`, `websockets`, `jupyter_nbmodel_client`, `pycrdt` — all installed by
+  `./conda-setup.sh` (and by `build4hermes.sh`)
 
 ---
 
 ## Installation
 
-### Step 1 — Install JupyterLab
+### Step 1 — Create the environment
 
 ```bash
-pip install jupyterlab ipykernel
+./conda-setup.sh clawpyter          # add -r to recreate, -d for dev tooling
+conda activate clawpyter
 ```
+
+This installs both halves of the stack — the plugin runtime plus JupyterLab and
+`jupyter-collaboration` — and its smoke test fails loudly if the collaboration
+extension does not actually load. There are no opt-out flags: a partially
+installed environment is the one failure mode that is invisible at runtime.
+
+**Prefer Docker for the server?** Skip ahead to
+[Running JupyterLab in Docker](#running-jupyterlab-in-docker); you still need
+this environment for the agent-side plugin.
 
 ---
 
@@ -251,6 +262,51 @@ Select instance to stop [1-2/a/q]:
 ```
 
 PID files live at `/tmp/jupyterlab-<PORT>.pid`.
+
+---
+
+## Running JupyterLab in Docker
+
+An alternative to `start-jpy.sh` — the image ships JupyterLab with
+`jupyter-collaboration` already enabled, so co-editing works without touching
+the host environment.
+
+```bash
+./docker-build-push.sh      # or: docker build -t clawpyter:latest .
+
+docker run --rm -p 8888:8888 -v "$PWD":/workspace clawpyter:latest
+```
+
+The mounted directory becomes `/workspace` inside the container and is
+JupyterLab's root. The token is printed on startup:
+
+```
+# jupyter token: 7c594e30-de83-417e-b559-0ac8b07e5e3a
+# connect to: http://127.0.0.1:8888
+# root_dir  : /workspace
+```
+
+Token handling matches `start-jpy.sh`:
+
+| `JUPYTER_TOKEN` | Behaviour |
+|---|---|
+| unset | a UUID is generated and printed |
+| `none` | authentication disabled (trusted networks only) |
+| any value | used verbatim |
+
+```bash
+docker run --rm -p 8888:8888 -e JUPYTER_TOKEN=secret \
+    -v "$PWD":/workspace clawpyter:latest
+```
+
+**File ownership.** The container starts as root, remaps its built-in `user`
+(uid 1000) to the owner of the mounted `/workspace`, then drops privileges —
+so notebooks you create are owned by you, not root. Override with
+`-e HOST_UID=... -e HOST_GID=...`.
+
+The plugin is **not** in the image: it belongs in the agent's environment, not
+on the notebook server. Install it with `./build4hermes.sh` as usual, then
+point the agent at `http://127.0.0.1:8888` with the printed token.
 
 ---
 
@@ -663,7 +719,7 @@ clawpyter/
 │   ├── __init__.py                   # register(ctx) — wires tools and installs skill
 │   ├── schemas.py                    # OpenAI-format tool schemas for all 20 tools
 │   ├── tools.py                      # Python Jupyter client (REST + WebSocket)
-│   ├── collab_client.py              # Y.js CRDT client for live co-editing (optional)
+│   ├── collab_client.py              # Y.js CRDT client for live co-editing
 │   └── SKILL.md                      # Skill file auto-installed to ~/.hermes/skills/clawpyter/
 ├── openclaw-plugin/                  # TypeScript plugin for OpenClaw
 │   ├── openclaw.plugin.json          # OpenClaw plugin metadata and config schema
@@ -676,10 +732,16 @@ clawpyter/
 ├── docs/
 │   └── _static/
 │       └── clawpyter.png
+├── conda-setup.sh                    # Create the conda env (plugin + JupyterLab + collab)
 ├── build4openclaw.sh                 # Build and install into OpenClaw
 ├── build4hermes.sh                   # Install Python plugin into Hermes Agent
 ├── start-jpy.sh                      # Start JupyterLab (token, port, browser options)
 ├── stop-jpy.sh                       # Stop JupyterLab (by port or interactive menu)
+├── Dockerfile                        # JupyterLab server image, collaboration enabled
+├── docker-jupyter-start.sh           # Container launch logic (token handling)
+├── docker-entrypoint.sh              # uid/gid remap; identical across the sibling repos
+├── docker-build-push.sh              # Build clawpyter:latest and push huangchtw/clawpyter
+├── .dockerignore
 ├── ATTRIBUTIONS.md
 └── README.md
 ```

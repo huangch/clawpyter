@@ -1,9 +1,8 @@
 # ClawPyter JupyterLab container
 #
-# Runs the JupyterLab server that ClawPyter's agent plugins drive. The image
-# bundles jupyter-collaboration, so live human + agent co-editing (Y.js CRDT)
-# works out of the box — the REST fallback is only used when a server without
-# it is targeted.
+# Runs the JupyterLab server that ClawPyter's agent plugins drive. Live human +
+# agent co-editing (Y.js CRDT) is a required feature, not an option, so
+# jupyter-collaboration is baked in and the build fails if it is not loadable.
 #
 # The plugin itself is NOT installed here: it lives in the agent's environment
 # (Hermes / OpenClaw), not on the notebook server.
@@ -43,16 +42,15 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # JupyterLab + real-time collaboration. jupyter-collaboration is the SERVER
-# half: without it /api/collaboration/session/... 404s and ClawPyter silently
-# degrades to REST (no co-editing).
+# half of co-editing and is mandatory: without it /api/collaboration/session/...
+# 404s and every notebook silently becomes last-writer-wins.
 RUN pip install --no-cache-dir --upgrade pip \
  && pip install --no-cache-dir \
         "jupyterlab>=4.0" \
         "jupyter-collaboration>=4.0"
 
-# Client half of the CRDT stack. Not needed by the server itself, but having it
-# in the image means `docker exec` sessions and notebooks can use the same API
-# the agent plugin does.
+# Client half of the CRDT stack, so `docker exec` sessions and notebooks inside
+# the container use the same API the agent plugin does.
 RUN pip install --no-cache-dir \
         "jupyter-nbmodel-client>=1.5" \
         "pycrdt>=0.14"
@@ -66,15 +64,17 @@ RUN jupyter lab --version >/dev/null \
 
 # Non-root user. uid 1000 matches the siblings and is remapped at RUN time by
 # the entrypoint to the owner of the mounted /workspace (or $HOST_UID/$HOST_GID).
-COPY docker-entrypoint.sh ./
+COPY docker-entrypoint.sh docker-jupyter-start.sh ./
 RUN groupadd -g 1000 user \
  && useradd -m -u 1000 -g 1000 user \
- && install -m 0755 ./docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+ && install -m 0755 ./docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh \
+ && install -m 0755 ./docker-jupyter-start.sh /usr/local/bin/docker-jupyter-start.sh
 
-# JUPYTER_TOKEN semantics match start-jpy.sh: unset -> a token is generated and
-# printed; "none" or "" -> authentication disabled.
-ENV JUPYTER_PORT=8888 \
-    JUPYTER_TOKEN=""
+# Token semantics match start-jpy.sh: unset -> a UUID is generated and printed;
+# JUPYTER_TOKEN=none -> authentication disabled (trusted networks only).
+# Deliberately NOT defaulted to "" here, so an unset variable can be told apart
+# from an explicit request for no auth.
+ENV JUPYTER_PORT=8888
 EXPOSE 8888
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
@@ -87,13 +87,7 @@ WORKDIR /workspace
 SHELL ["/bin/bash", "-lc"]
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
-# `none` and the empty string both disable the token, matching start-jpy.sh.
-CMD ["bash", "-lc", "\
-TOKEN=\"${JUPYTER_TOKEN:-}\"; \
-if [ \"$TOKEN\" = \"none\" ]; then TOKEN=\"\"; fi; \
-exec jupyter lab \
-  --ip=0.0.0.0 \
-  --port=\"${JUPYTER_PORT:-8888}\" \
-  --no-browser \
-  --ServerApp.root_dir=/workspace \
-  --IdentityProvider.token=\"$TOKEN\""]
+# The launch logic lives in a script rather than inline here: a JSON exec-form
+# CMD cannot contain shell line-continuations, and a one-line version would be
+# unreadable and untestable.
+CMD ["/usr/local/bin/docker-jupyter-start.sh"]

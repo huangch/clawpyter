@@ -13,26 +13,41 @@ packaged twice:
   the collaboration deps are missing.
 - `openclaw-plugin/` — TypeScript plugin for OpenClaw. Uses the Contents-API path only
   (no co-editing yet).
-- Root shell scripts: `start-jpy.sh` / `stop-jpy.sh` manage a local JupyterLab instance.
+- Root shell scripts: `conda-setup.sh` builds an environment; `start-jpy.sh` / `stop-jpy.sh`
+  manage a local JupyterLab instance.
+- `Dockerfile` + `docker-build-push.sh` build `huangchtw/clawpyter`, a JupyterLab server
+  image with collaboration enabled. The image deliberately does **not** contain the
+  plugins — those belong in the agent's environment.
 
 ## Environment
 
 - **Always run `conda activate claude` before any Python / pip command.**
-- Python plugin deps: `httpx`, `websockets` (required); `jupyter_nbmodel_client`, `pycrdt`
-  (optional, co-editing only).
+- `./conda-setup.sh ENV_NAME [-r|--reset] [-d|--dev]` creates/populates an env.
+  There are **no** opt-out flags: co-editing is mandatory, so it always installs
+  both halves of the stack.
+- Deps, all required: `httpx`, `websockets`, `jupyter_nbmodel_client`, `pycrdt`
+  (agent side) and `jupyterlab`, `jupyter-collaboration` (server side).
+  A missing server extension is the dangerous case — it degrades silently to
+  whole-file PUTs, so `start-jpy.sh` refuses to launch without it.
 - OpenClaw plugin deps are managed by `npm` inside `openclaw-plugin/` (TypeScript, built to `dist/`).
 
 ## Build / deploy
 
 ```sh
-./build4hermes.sh    # pip deps + copy hermes-plugin/ -> ~/.hermes/plugins/clawpyter/
-./build4openclaw.sh  # npm install + build, then `openclaw plugins install -l`
+./conda-setup.sh <env>   # env + all deps (agent side AND JupyterLab server)
+./build4hermes.sh        # pip deps + copy hermes-plugin/ -> ~/.hermes/plugins/clawpyter/
+./build4openclaw.sh      # npm install + build, then `openclaw plugins install -l`
+./docker-build-push.sh   # build clawpyter:latest -> push huangchtw/clawpyter:latest
 ```
 
 - `build4hermes.sh` does `rm -rf` of the destination before copying — re-run it after **every**
   change to `hermes-plugin/` (the deployed copy otherwise goes stale).
 - `build4openclaw.sh` uninstalls before installing; a running OpenClaw daemon may need
   `openclaw daemon restart` afterwards.
+- The image's launch logic lives in `docker-jupyter-start.sh`, not in a `CMD` string: an
+  exec-form `CMD` is JSON and cannot contain shell line-continuations.
+- `docker-entrypoint.sh` is kept **byte-for-byte identical** across wsinsight, sptxinsight,
+  hplot, wsinsight-train and clawpyter. Copy it, don't edit one copy.
 
 ## SKILL.md sync rule (important)
 
@@ -46,7 +61,11 @@ other, keeping that difference intact.
 
 - `start-jpy.sh` token design: no `-t` → auto-generated UUID token; `-t none` or `-t ""` →
   no authentication (trusted networks only); `-t <token>` → explicit token. Keep the help
-  text and README consistent with this if you touch token handling.
+  text, the README and `docker-jupyter-start.sh` consistent with this if you touch token
+  handling — the container mirrors the same three cases via `JUPYTER_TOKEN`.
+- `start-jpy.sh` runs whichever `jupyter` is on PATH (no `conda run` wrapper), so `$!` is
+  the real server PID. Its two preflight checks — `jupyter` present, `jupyter_collaboration`
+  loaded — are fatal by design.
 - Never commit secrets: tokens, `.jupyter_ystore.db`, `node_modules/`, `dist/`, `__pycache__/`
   are gitignored — if a path is still tracked, use `git rm --cached`.
 - The README's "Project Structure" section mirrors the real tree; update it when files move.
