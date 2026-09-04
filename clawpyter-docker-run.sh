@@ -1,8 +1,9 @@
 #!/bin/sh
 # Host-side wrapper: start the ClawPyter JupyterLab container.
 #
-# (The in-container counterpart is docker-jupyter-start.sh, which is baked into
-# the image and runs as its CMD — same naming rule as docker-entrypoint.sh.)
+# The image needs no launch script — jupyter-server reads JUPYTER_TOKEN itself
+# (unset -> random token printed in the banner; "" -> auth disabled). This
+# wrapper only adds the `-t none` spelling that start-jpy.sh uses.
 
 IMAGE_ID=clawpyter:latest
 
@@ -46,7 +47,7 @@ if [ -z "${DATA_DIR}" ]; then
     echo "Usage: clawpyter-docker-run.sh [-p <port>] [-t <token>] [--no-pull] /path/to/notebooks [COMMAND ...]"
     echo ""
     echo "Options:"
-    echo "  -p, --port <port>   Host and container port (default: 8888)"
+    echo "  -p, --port <port>   Host port, mapped to 8888 in the container (default: 8888)"
     echo "  -t, --token <tok>   Jupyter token. Omit to have one generated and printed;"
     echo "                      use 'none' to disable authentication entirely."
     echo "      --no-pull       Skip 'docker pull' (use the local image as-is)"
@@ -68,9 +69,12 @@ if [ "${PULL}" -eq 1 ]; then
     docker pull ${IMAGE_ID} || echo "(pull failed; using local image)"
 fi
 
-# -e JUPYTER_TOKEN is forwarded only when set, so an unset token still means
-# "generate one" inside the container rather than "disable authentication".
-if [ -n "${TOKEN}" ]; then
+# -e JUPYTER_TOKEN is forwarded only when the caller asked for something: unset
+# means "let jupyter generate one", while `none` becomes the empty string that
+# jupyter treats as "no authentication".
+if [ "${TOKEN}" = "none" ]; then
+    TOKEN_ENV="-e JUPYTER_TOKEN="
+elif [ -n "${TOKEN}" ]; then
     TOKEN_ENV="-e JUPYTER_TOKEN=${TOKEN}"
 else
     TOKEN_ENV=""
@@ -83,16 +87,17 @@ else
     set --
 fi
 
+# The container always listens on 8888; PORT is the host side of the mapping.
 # shellcheck disable=SC2086
 echo docker run --rm -it --init \
-    -e HOST_UID -e HOST_GID ${TOKEN_ENV} -e JUPYTER_PORT="${PORT}" \
-    -p "${PORT}":"${PORT}" \
+    -e HOST_UID -e HOST_GID ${TOKEN_ENV} \
+    -p "${PORT}":8888 \
     -v "${DATA_DIR}":/workspace \
     ${IMAGE_ID} "$@"
 
 # shellcheck disable=SC2086
 exec docker run --rm -it --init \
-    -e HOST_UID -e HOST_GID ${TOKEN_ENV} -e JUPYTER_PORT="${PORT}" \
-    -p "${PORT}":"${PORT}" \
+    -e HOST_UID -e HOST_GID ${TOKEN_ENV} \
+    -p "${PORT}":8888 \
     -v "${DATA_DIR}":/workspace \
     ${IMAGE_ID} "$@"

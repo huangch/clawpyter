@@ -64,21 +64,20 @@ RUN jupyter lab --version >/dev/null \
 
 # Non-root user. uid 1000 matches the siblings and is remapped at RUN time by
 # the entrypoint to the owner of the mounted /workspace (or $HOST_UID/$HOST_GID).
-COPY docker-entrypoint.sh docker-jupyter-start.sh ./
+COPY docker-entrypoint.sh ./
 RUN groupadd -g 1000 user \
  && useradd -m -u 1000 -g 1000 user \
- && install -m 0755 ./docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh \
- && install -m 0755 ./docker-jupyter-start.sh /usr/local/bin/docker-jupyter-start.sh
+ && install -m 0755 ./docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-# Token semantics match start-jpy.sh: unset -> a UUID is generated and printed;
-# JUPYTER_TOKEN=none -> authentication disabled (trusted networks only).
-# Deliberately NOT defaulted to "" here, so an unset variable can be told apart
-# from an explicit request for no auth.
-ENV JUPYTER_PORT=8888
+# Token handling needs no wrapper: jupyter-server reads JUPYTER_TOKEN itself.
+#   unset -> a random token is generated and printed in the startup banner
+#   set   -> used verbatim
+#   ""    -> authentication disabled
+# The container always listens on 8888; map it wherever you like with -p.
 EXPOSE 8888
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS "http://127.0.0.1:${JUPYTER_PORT}/api" >/dev/null || exit 1
+    CMD curl -fsS "http://127.0.0.1:8888/api" >/dev/null || exit 1
 
 WORKDIR /workspace
 # NOTE: no `USER` here on purpose — the container starts as root so the
@@ -87,7 +86,8 @@ WORKDIR /workspace
 SHELL ["/bin/bash", "-lc"]
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
-# The launch logic lives in a script rather than inline here: a JSON exec-form
-# CMD cannot contain shell line-continuations, and a one-line version would be
-# unreadable and untestable.
-CMD ["/usr/local/bin/docker-jupyter-start.sh"]
+CMD ["jupyter", "lab", \
+     "--ip=0.0.0.0", \
+     "--port=8888", \
+     "--no-browser", \
+     "--ServerApp.root_dir=/workspace"]
