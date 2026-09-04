@@ -42,7 +42,7 @@ packaged twice:
 ```
 
 - Script naming rule: a `docker-` PREFIX means the script is baked into the
-  image and runs inside it (`docker-entrypoint.sh`, `docker-jupyter-start.sh`);
+  image and runs inside it (`docker-entrypoint.sh`);
   host-side wrappers are `<package>-docker-run.sh`, matching wsinsight,
   sptxinsight and hplot. `docker-build-push.sh` is the one host-side exception,
   and is named identically across all the sibling repos.
@@ -51,8 +51,11 @@ packaged twice:
   change to `hermes-plugin/` (the deployed copy otherwise goes stale).
 - `build4openclaw.sh` uninstalls before installing; a running OpenClaw daemon may need
   `openclaw daemon restart` afterwards.
-- The image's launch logic lives in `docker-jupyter-start.sh`, not in a `CMD` string: an
-  exec-form `CMD` is JSON and cannot contain shell line-continuations.
+- The image needs no launch wrapper: `jupyter-server` reads `JUPYTER_TOKEN`
+  itself (unset -> random token in the banner, `""` -> auth disabled), so `CMD`
+  is a plain `jupyter lab ...` array. The container always listens on 8888;
+  `clawpyter-docker-run.sh` maps the host port and translates `-t none` to the
+  empty string.
 - `docker-entrypoint.sh` is kept **byte-for-byte identical** across wsinsight, sptxinsight,
   hplot, wsinsight-train and clawpyter. Copy it, don't edit one copy.
 
@@ -68,7 +71,7 @@ other, keeping that difference intact.
 
 - `start-jpy.sh` token design: no `-t` → auto-generated UUID token; `-t none` or `-t ""` →
   no authentication (trusted networks only); `-t <token>` → explicit token. Keep the help
-  text, the README and `docker-jupyter-start.sh` consistent with this if you touch token
+  text, the README and `clawpyter-docker-run.sh` consistent with this if you touch token
   handling — the container mirrors the same three cases via `JUPYTER_TOKEN`.
 - `start-jpy.sh` runs whichever `jupyter` is on PATH (no `conda run` wrapper), so `$!` is
   the real server PID. Its two preflight checks — `jupyter` present, `jupyter_collaboration`

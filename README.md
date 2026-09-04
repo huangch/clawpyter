@@ -748,7 +748,6 @@ clawpyter/
 ├── stop-jpy.sh                       # Stop JupyterLab (by port or interactive menu)
 ├── Dockerfile                        # JupyterLab server image, collaboration enabled
 ├── clawpyter-docker-run.sh           # HOST: start the container (port, token, mount)
-├── docker-jupyter-start.sh           # IN-IMAGE: container CMD; token handling
 ├── docker-entrypoint.sh              # IN-IMAGE: uid/gid remap; identical across siblings
 ├── docker-build-push.sh              # Build clawpyter:latest and push huangchtw/clawpyter
 ├── .dockerignore

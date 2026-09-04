@@ -1,5 +1,4 @@
-# The image copies only docker-entrypoint.sh and docker-jupyter-start.sh — the
-# agent plugins are installed into the AGENT's environment, never into the
+# The image copies only docker-entrypoint.sh — the agent plugins are installed into the AGENT's environment, never into the
 # notebook server image. Everything else is excluded to keep the context small.
 
 # Git metadata — never needed in the image, and it dominates the context.
