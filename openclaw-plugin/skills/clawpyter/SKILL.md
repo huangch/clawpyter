@@ -30,7 +30,13 @@ Do not attempt any Jupyter tool call before the connection is established. Even 
 
 ## Available tools
 
-There are 17 tools in three categories.
+There are 20 tools in three categories.
+
+| Category | Needs an active notebook? | Tools |
+|---|---|---|
+| 1 — Server | no | 4 |
+| 2 — Notebook session | no (these are what activate one) | 6 + 3 `_compat` wrappers = 9 |
+| 3 — Cell | **yes** | 7 |
 
 **Category 1 — Server tools (4 tools)**
 These tools do not require an active notebook. Use them to inspect the server.
@@ -460,3 +466,7 @@ Returns: all execution outputs.
 | Passing an empty string for `notebook_name` | ClawPyter uses `notebook_path` as the name instead, which may create duplicate sessions | Always pass a non-empty value for `notebook_name`. When unsure, use the same value as `notebook_path` |
 | Using `jupyter_execute_code` to set up variables for later cells | The variables exist in the kernel but are not saved in the notebook | Use `jupyter_insert_execute_code_cell` so the code is saved in the notebook |
 | Passing cell indices to `jupyter_delete_cell` in ascending order and expecting correct results | Not a problem — the tool handles ordering automatically | Pass all indices you want to delete in a single call; order does not matter |
+| Calling any tool before the URL and token are set | The call fails, or silently hits the wrong server | Ask the user for the URL and token, then `jupyter_connect_to_jupyter` |
+| Letting a long cell hit the default 90 s timeout | Execution stops and an error is returned; the kernel may still be busy | Raise `timeout` on `jupyter_execute_cell`, and set `stream: true` to watch progress |
+| Using `jupyter_execute_code` for something slow | It caps at 60 s and cannot be raised | Put the code in a cell and use `jupyter_execute_cell` with a larger `timeout` |
+| Overwriting a cell the user just edited | Their change is lost | Read the cell first (`jupyter_read_cell`) and merge |
