@@ -101,7 +101,7 @@ read-modify-write path. Set `JUPYTER_COLLAB_MODE=off` to force the legacy path.
   without them every notebook silently degrades to whole-file
   read-modify-write (last writer wins).
 
-`./conda-setup.sh` installs all of it in one step, and `./start-jpy.sh` refuses
+`./conda-setup.sh` installs all of it in one step, and `./clawpyter.sh start -b native` refuses
 to start a server that is missing the collaboration extension. The OpenClaw
 plugin still uses the non-collaborative path regardless.
 
@@ -173,149 +173,158 @@ The plugin is discovered by Hermes at startup. If Hermes is already running, res
 
 ```bash
 export JUPYTER_URL=http://127.0.0.1:8888
-export JUPYTER_TOKEN=<token-from-start-jpy.sh>
+export JUPYTER_TOKEN=<token-from-clawpyter.sh>
 ```
 
-Alternatively, paste the `Connect to Jupyter at …` line printed by `start-jpy.sh` into the Hermes chat. The AI calls `jupyter_connect_to_jupyter` and all subsequent operations use that server.
+Alternatively, paste the `Connect to Jupyter at …` line printed by `clawpyter.sh start` into the Hermes chat. The AI calls `jupyter_connect_to_jupyter` and all subsequent operations use that server.
 
 ### Step 2 — Start JupyterLab
 
-Each time you want to use ClawPyter, start JupyterLab with the helper script:
+Each time you want to use ClawPyter, start JupyterLab with the unified `clawpyter`
+script. It manages **both** the native (`jupyter lab` on the host) and Docker
+backends, and the lifecycle is recorded per-project at `<data_dir>/.clawpyter/instances.json`:
 
 ```bash
-./start-jpy.sh -n ~/.openclaw/jupyter_home
+# Native: jupyter lab on the host, in your current conda env
+./clawpyter start -b native -d ~/.openclaw/jupyter_home
+
+# Docker: container from huangchtw/clawpyter:latest (auto-pull)
+./clawpyter start -b docker -d ~/.openclaw/jupyter_home
 ```
 
-**What this script does:**
-1. Resolves the port (pre-checks availability if `-p` is specified; otherwise auto-finds starting from 8888)
-2. Stops any previously running JupyterLab instance **on the same port**
-3. Uses the token from `-t`, or generates a secure random one (pass `-t none` to disable authentication)
-4. Starts JupyterLab bound to all network interfaces (`0.0.0.0`)
-5. Detects the actual bound port from the log (in case auto-find picked a different one)
-6. Waits until JupyterLab is fully responsive (fails with the log if it never comes up)
-7. Prints the access URL (with token, or a plain URL when `-t none` is used) and a ready-to-paste AI connect command
+**What it does:**
+1. Resolves the port (default 8888; refuses if taken, suggests `-p <other>`)
+2. Preflights: `jupyter` on PATH + `jupyter_server_ydoc` extension loaded (native only)
+3. Uses the token from `-t`, generates a UUID by default, or `--no-token` for none
+4. Starts the server in the background and waits for it to answer on the port (≤ 60 s)
+5. Records the instance in `<data_dir>/.clawpyter/instances.json`
+6. Prints the access URL and a ready-to-paste AI connect command
 
-Multiple instances can run simultaneously — each is tracked by its own PID file (`/tmp/jupyterlab-<PORT>.pid`).
+Multiple instances can run simultaneously — different `-p` ports, different `-d`
+data dirs, or both backends in parallel. State is per-project (no shared
+`/tmp/*.pid` files; no `~/.hermes/` coupling; works the same for Hermes, OpenClaw,
+or pure human use).
 
 **Output example:**
 ```
-# ---------------------------------------------------------------------------
-# URL to access Jupyter Lab (with token for authentication)
-# ---------------------------------------------------------------------------
-http://192.168.1.10:8888/?token=a1b2c3d4-e5f6-7890-abcd-ef1234567890
-
-# ---------------------------------------------------------------------------
-# Tell the AI to connect with:
-# ---------------------------------------------------------------------------
-Connect to Jupyter at http://192.168.1.10:8888 with token a1b2c3d4-e5f6-7890-abcd-ef1234567890
+ClawPyter (native) running on port 8888 (PID 12345)
+  URL:   http://127.0.0.1:8888/?token=a1b2c3d4-...
+  AI:    Connect to Jupyter at http://127.0.0.1:8888 with token a1b2c3d4-...
+  Log:   /home/you/.openclaw/jupyter_home/.clawpyter/8888.log
 ```
 
-Logs are written to `/tmp/jupyterlab-<PORT>.log`.
+Copy the `Connect to Jupyter at …` line from the output and paste it into the
+chat. The AI calls `jupyter_connect_to_jupyter` and is ready to work immediately
+— no `openclaw.json` config or OpenClaw restart needed.
 
-**Script options:**
+**Available flags:**
 ```
-Usage: ./start-jpy.sh -n <notebook_directory> [-b] [-p <port>] [-t <jupyter_token>]
+Usage: clawpyter start -d DIR -b {native,docker} [-p PORT] [-t TOKEN|--no-token]
 
-  -n <path>    Required. Directory where notebooks are stored.
-  -b           Open browser when Jupyter server starts (default: no browser).
-  -p <port>    Optional. Desired port (default: 8888). If specified and occupied,
-               the script exits with an error instead of trying another port.
-  -t <token>   Optional. Use a specific token instead of generating one.
-               Special values that disable token authentication:
-                 -t none   (recommended)
-                 -t ""     (empty string also works)
-               With authentication disabled, anyone who can reach the server
-               URL can use Jupyter — only do this on trusted networks.
-  -h           Show this help message.
+  -d, --data-dir  DIR      Project dir whose notebooks Jupyter serves (required).
+  -b, --backend   BACKEND  native | docker (required).
+  -p, --port      PORT     Host port; default 8888.
+  -t, --token     TOKEN    Auth token. Omit for auto-generated UUID; 'none' or
+                           --no-token disables authentication.
+      --no-token           Same as -t none.
+```
 
 Examples:
-  ./start-jpy.sh -n ~/.openclaw/jupyter_home
-  ./start-jpy.sh -n ~/.openclaw/jupyter_home -p 8889
-  ./start-jpy.sh -n ~/.openclaw/jupyter_home -b -p 9000 -t mytoken123
-  ./start-jpy.sh -n ~/.openclaw/jupyter_home -t none    # no token / no auth
+```bash
+./clawpyter start -b native -d ~/.openclaw/jupyter_home           # auto-token on 8888
+./clawpyter start -b docker -d ~/.openclaw/jupyter_home           # container, auto-token
+./clawpyter start -b native -d ~/.openclaw/jupyter_home -p 8889   # explicit port
+./clawpyter start -b native -d ~/.openclaw/jupyter_home --no-token # LAN-share mode
+./clawpyter start -b docker -d ./notebooks -t mysecret123        # pinned token, container
 ```
-
-Copy the `Connect to Jupyter at …` line from the output and paste it into OpenClaw chat. The AI calls `jupyter_connect_to_jupyter` and is ready to work immediately — no `openclaw.json` config or OpenClaw restart needed.
 
 ### Step 3 — Stop JupyterLab
 
-When done, shut down JupyterLab:
-
 ```bash
-# Stop a specific instance by port
-./stop-jpy.sh -p 8888
-
-# Or omit -p to get an interactive menu of all running instances
-./stop-jpy.sh
+# Stop a specific (native | docker) instance tied to a project dir
+./clawpyter stop -b native -d ~/.openclaw/jupyter_home
+./clawpyter stop -b docker -d ~/.openclaw/jupyter_home
 ```
 
-With no `-p` flag: if only one instance is running it is stopped automatically; if multiple are running a numbered menu is shown with options to stop one or all.
+State file is updated atomically (write-temp-then-rename); a crashed previous
+instance is detected and cleaned up on next `stop`.
 
+**Other commands:**
+```bash
+./clawpyter status -d ~/.openclaw/jupyter_home                # show live instances
+./clawpyter status -d ~/.openclaw/jupyter_home --all          # include stale
+./clawpyter restart -b native -d ~/.openclaw/jupyter_home     # stop + start
+./clawpyter logs -b native -d ~/.openclaw/jupyter_home        # tail the log
+./clawpyter logs -b native -d ~/.openclaw/jupyter_home -f     # tail -f
 ```
-Running Jupyter Lab instances:
-  1) port 8888  (PID 12345)
-  2) port 8889  (PID 12399)
-  a) Stop all
-  q) Quit
 
-Select instance to stop [1-2/a/q]:
-```
-
-PID files live at `/tmp/jupyterlab-<PORT>.pid`.
+The legacy scripts (`start-jpy.sh`, `stop-jpy.sh`, `clawpyter-docker-run.sh`)
+are kept under `bak_old_scripts/` for reference; they still work but are no
+longer developed. New users should use `./clawpyter`.
 
 ---
 
 ## Running JupyterLab in Docker
 
-An alternative to `start-jpy.sh` — the image ships JupyterLab with
+An alternative to the native backend — the image ships JupyterLab with
 `jupyter-collaboration` already enabled, so co-editing works without touching
-the host environment.
+the host environment. Use the unified `clawpyter` script:
 
 ```bash
-./docker-build-push.sh      # or: docker build -t clawpyter:latest .
+./docker-build-push.sh      # or: docker build -t huangchtw/clawpyter:latest .
 
-./clawpyter-docker-run.sh ~/notebooks
+./clawpyter start -b docker -d ~/notebooks            # auto-token, port 8888
+./clawpyter start -b docker -d ~/notebooks -p 8899    # other port
 ```
 
-`clawpyter-docker-run.sh` is the host-side wrapper (the same shape as
-`hplot-docker-run.sh` and friends). The equivalent raw command is:
+`clawpyter` is the host-side wrapper (the same shape as `hplot`, `wsinsight`,
+`sptxinsight` and friends). Behind the scenes it issues:
 
 ```bash
-docker run --rm -it --init -e HOST_UID -e HOST_GID \
-    -p 8888:8888 -v ~/notebooks:/workspace clawpyter:latest
+docker run -d --init \
+    --label clawpyter.managed=1 \
+    --name "clawpyter_<port>_<pid>" \
+    -e HOST_UID -e HOST_GID \
+    -p 8888:8888 \
+    -v ~/notebooks:/workspace \
+    huangchtw/clawpyter:latest
 ```
 
 The mounted directory becomes `/workspace` inside the container and is
-JupyterLab's root. The token is printed on startup:
+JupyterLab's root. The token (auto, fixed, or none) is recorded in
+`<notebook_dir>/.clawpyter/instances.json` and printed in stdout.
 
-```
-# jupyter token: 7c594e30-de83-417e-b559-0ac8b07e5e3a
-# connect to: http://127.0.0.1:8888
-# root_dir  : /workspace
-```
+Token handling:
 
-Token handling matches `start-jpy.sh`:
-
-| `JUPYTER_TOKEN` | Behaviour |
+| `-t` flag | Behaviour |
 |---|---|
-| unset | a UUID is generated and printed |
-| `none` | authentication disabled (trusted networks only) |
-| any value | used verbatim |
+| not given | a UUID is auto-generated and recorded in state |
+| `--no-token` | `JUPYTER_TOKEN=` empty string → JupyterLab disables auth |
+| `-t <literal>` | pinned token |
+
+To override the image (e.g. for forks):
 
 ```bash
-./clawpyter-docker-run.sh -t secret ~/notebooks     # fixed token
-./clawpyter-docker-run.sh -p 8899 -t none ~/notebooks   # other port, no auth
-./clawpyter-docker-run.sh ~/notebooks bash          # shell instead of the server
+CLAWPYTER_IMAGE=ghcr.io/myorg/clawpyter:dev ./clawpyter start -b docker -d ~/notebooks
+CLAWPYTER_NO_PULL=1 ./clawpyter start -b docker -d ~/notebooks      # use local image as-is
 ```
 
 **File ownership.** The container starts as root, remaps its built-in `user`
 (uid 1000) to the owner of the mounted `/workspace`, then drops privileges —
 so notebooks you create are owned by you, not root. Override with
-`-e HOST_UID=... -e HOST_GID=...`.
+`export HOST_UID=... HOST_GID=...` before running.
+
+**Stop / view logs:**
+
+```bash
+./clawpyter stop    -b docker -d ~/notebooks       # docker stop + state cleanup
+./clawpyter logs    -b docker -d ~/notebooks       # recent log lines
+./clawpyter logs    -b docker -d ~/notebooks -f    # follow
+```
 
 The plugin is **not** in the image: it belongs in the agent's environment, not
 on the notebook server. Install it with `./build4hermes.sh` as usual, then
-point the agent at `http://127.0.0.1:8888` with the printed token.
+point the agent at the URL+token printed by `clawpyter start`.
 
 ---
 
@@ -330,7 +339,7 @@ If you want the connection to persist across OpenClaw restarts, set the `config`
 | Option | Default | Description |
 |---|---|---|
 | `jupyterUrl` | `http://127.0.0.1:8888` | URL of the JupyterLab server |
-| `jupyterToken` | _(empty)_ | Authentication token. Set automatically by `start-jpy.sh`. |
+| `jupyterToken` | _(empty)_ | Authentication token. Set automatically by `clawpyter.sh start`. |
 | `notebookDir` | _(none)_ | Directory where notebooks are stored. Used for conflict detection. |
 | `defaultNotebook` | _(none)_ | Default notebook name for `jupyter_create_notebook`. |
 | `timeoutMs` | `30000` | Timeout in milliseconds for all Jupyter operations. |
@@ -656,7 +665,7 @@ Do NOT use for code that needs to be saved in the notebook — use `jupyter_inse
 The token is missing or wrong. Two options:
 
 - **Runtime fix (no restart):** Tell the AI: *"Connect to Jupyter at `http://<host>:8888` with token `<token>`"* — the AI calls `jupyter_connect_to_jupyter` and the correct token takes effect immediately. Works in both agents.
-- **Persistent fix (OpenClaw):** Copy the token printed by `./start-jpy.sh` and update the `config.jupyterToken` field in `~/.openclaw/openclaw.json`, then restart OpenClaw.
+- **Persistent fix (OpenClaw):** Copy the token printed by `./clawpyter.sh` and update the `config.jupyterToken` field in `~/.openclaw/openclaw.json`, then restart OpenClaw.
 - **Persistent fix (Hermes):** Set `JUPYTER_TOKEN=<token>` in your environment or `.env` file before starting Hermes.
 
 ### AI says "No active notebook"
@@ -665,56 +674,61 @@ You must activate a notebook before using any cell tool. Call `jupyter_use_noteb
 
 ### JupyterLab did not start
 
-Check the log (substitute the port you used):
+Check the log:
 ```bash
-cat /tmp/jupyterlab-8888.log
+./clawpyter logs -b native -d <your-dir>          # or -b docker
 ```
 
-Common causes: port already in use, or the notebook directory does not exist.
-
-If the port is occupied and you used `-p`, the script exits immediately with an error message. Either free the port or omit `-p` to let Jupyter auto-select the next available one:
-```bash
-mkdir -p ~/.openclaw/jupyter_home
-./start-jpy.sh -n ~/.openclaw/jupyter_home
-```
+Common causes: port already in use, the notebook directory does not exist, or
+`jupyter-collaboration` is not installed in the active env (native only —
+the preflight check is fatal; run `./conda-setup.sh <env>` to fix).
 
 ### Verify JupyterLab is running
 
 ```bash
-curl -s http://127.0.0.1:8888/api/status -H "Authorization: token YOUR_TOKEN"
+./clawpyter status -d <your-dir>
 ```
 
-### Check running processes
-
+Or via the API:
 ```bash
-ps aux | grep jupyter
-
-# List all tracked PID files
-ls /tmp/jupyterlab-*.pid 2>/dev/null
+curl -s http://127.0.0.1:8888/api/status -H "Authorization: token YOUR_TOKEN"
 ```
 
 ### Restart a specific instance
 
 ```bash
-./stop-jpy.sh -p 8888
-./start-jpy.sh -n ~/.openclaw/jupyter_home -p 8888
+./clawpyter restart -b native -d ~/.openclaw/jupyter_home
+./clawpyter restart -b docker -d ~/.openclaw/jupyter_home
 ```
 
-### Restart everything (OpenClaw)
+### Stop everything
 
 ```bash
-./stop-jpy.sh        # interactive menu — select 'a' to stop all
-./start-jpy.sh -n ~/.openclaw/jupyter_home
-openclaw gateway stop && openclaw gateway install --force && openclaw gateway restart
+./clawpyter stop -b native -d <each-dir-you-started>
+./clawpyter stop -b docker -d <each-dir-you-started>
+```
+
+Or, for a quick sweep:
+```bash
+for d in ~/.openclaw/jupyter_home ~/work/notebooks; do
+    ./clawpyter stop -b native -d "$d" 2>/dev/null
+    ./clawpyter stop -b docker -d "$d" 2>/dev/null
+done
 ```
 
 ### Restart everything (Hermes Agent)
 
 ```bash
-./stop-jpy.sh
-./start-jpy.sh -n ~/.openclaw/jupyter_home
-./build4hermes.sh    # re-install plugin if source changed
-hermes               # restart Hermes to reload the plugin
+# Stop any running clawpyter instances tied to the dirs you care about
+./clawpyter stop -b native -d ~/.openclaw/jupyter_home
+./clawpyter stop -b docker -d ~/.openclaw/jupyter_home
+
+# Start fresh
+./clawpyter start -b native -d ~/.openclaw/jupyter_home
+
+# Re-install the plugin if the source changed, then restart Hermes
+./build4hermes.sh
+hermes               # Ctrl-C any existing session first to force a fresh start
 ```
 
 ---
@@ -744,12 +758,11 @@ clawpyter/
 ├── conda-setup.sh                    # Create the conda env (plugin + JupyterLab + collab)
 ├── build4openclaw.sh                 # Build and install into OpenClaw
 ├── build4hermes.sh                   # Install Python plugin into Hermes Agent
-├── start-jpy.sh                      # Start JupyterLab (token, port, browser options)
-├── stop-jpy.sh                       # Stop JupyterLab (by port or interactive menu)
+├── clawpyter.sh                      # Unified lifecycle CLI (start/stop/restart/status/logs)
 ├── Dockerfile                        # JupyterLab server image, collaboration enabled
-├── clawpyter-docker-run.sh           # HOST: start the container (port, token, mount)
 ├── docker-entrypoint.sh              # IN-IMAGE: uid/gid remap; identical across siblings
 ├── docker-build-push.sh              # Build clawpyter:latest and push huangchtw/clawpyter
+├── bak_old_scripts/                  # Legacy start-jpy.sh / stop-jpy.sh / clawpyter-docker-run.sh (reference only)
 ├── .dockerignore
 ├── ATTRIBUTIONS.md
 └── README.md
@@ -761,3 +774,7 @@ clawpyter/
 > only difference is the "Co-editing with a human" section, which appears only
 > in the Hermes copy — live co-editing (Y.js CRDT) is a Hermes-only feature,
 > while the OpenClaw plugin still uses the Contents-API path.
+
+> Note: the legacy `start-jpy.sh`, `stop-jpy.sh`, and `clawpyter-docker-run.sh`
+> scripts have moved to `bak_old_scripts/`. They still work but new users
+> should use the unified `./clawpyter` entry point.

@@ -11,20 +11,72 @@ Use ClawPyter for EVERY operation that involves Jupyter notebooks, kernels, or f
 
 ---
 
-## MANDATORY PREREQUISITE: Jupyter server URL and token
+## Connecting to a Jupyter server
 
-**Before doing ANYTHING with ClawPyter, you MUST have a valid Jupyter server URL and token.**
+Before doing ANY Jupyter work, you need a running Jupyter server with a known URL and token. **You should start one yourself** using the bundled `clawpyter.sh` lifecycle script — do not ask the user to start it unless they have explicitly told you they want to manage Jupyter themselves. The lifecycle script lives at:
 
-If the user asks you to do anything Jupyter-related and you do not already have the URL and token (either from the current conversation or from a previous `jupyter_connect_to_jupyter` call), **stop and ask the user for them immediately**:
+```
+/workspace/wsinsight/clawpyter/clawpyter.sh
+```
 
-> "To connect to your Jupyter server, I need the server URL and token. You can get these by running `./start-jpy.sh -n <notebook_dir>` and copying the `Connect to Jupyter at …` line it prints."
+It manages BOTH backends (native `jupyter lab` on the host, or a Docker container) and records instances per-project in `<notebook_dir>/.clawpyter/instances.json`.
 
-Do not attempt any Jupyter tool call before the connection is established. Even `jupyter_list_files` will fail or silently hit the wrong server if the URL and token are not set.
+### Recipe — start a Jupyter server
 
-**Decision tree:**
-1. Do you have a URL and token from this conversation? → proceed.
-2. Did you already call `jupyter_connect_to_jupyter` successfully in this session? → proceed.
-3. Otherwise → **ask the user for the URL and token before doing anything else.**
+When the user asks to do notebook work, identify the project directory first (the one containing the `.ipynb` files the user wants to work with; if not stated, ask). Then:
+
+**Step 1 — check if a server is already running on that directory:**
+
+```bash
+bash /workspace/wsinsight/clawpyter/clawpyter.sh status -d <notebook_dir>
+```
+
+If it prints a row for a live instance, skip to "connect" below.
+
+**Step 2 — choose a backend:**
+
+- If `docker` CLI is on PATH AND `docker info` works → use `-b docker`
+- Else if `jupyter` is on AND `jupyter server extension list | grep -q jupyter_server_ydoc` → use `-b native` (the conda env must have `jupyter-collaboration` installed; if not, run `bash /workspace/wsinsight/clawpyter/conda-setup.sh <env>` first)
+- Otherwise, ask the user which backend they want.
+
+**Step 3 — start the server (auto-picks free port starting at 8888; auto-generates a token):**
+
+```bash
+bash /workspace/wsinsight/clawpyter/clawpyter.sh start -b <native|docker> -d <notebook_dir>
+```
+
+The script prints two critical lines:
+
+```
+ClawPyter (docker) running on port 8888 (container abc123)
+  URL:   http://127.0.0.1:8888/?token=<TOKEN>
+  AI:    Connect to Jupyter at http://127.0.0.1:8888 with token <TOKEN>
+  Log:   /path/to/.clawpyter/8888.log
+```
+
+**Step 4 — connect to it.** Call `jupyter_connect_to_jupyter` with the URL and token from the `AI:` line above.
+
+### Recipe — stop a Jupyter server
+
+When the user is done (or asks to stop / shut down / clean up):
+
+```bash
+bash /workspace/wsinsight/clawpyter/clawpyter.sh stop -b <backend> -d <notebook_dir>
+```
+
+### Recipe — what to do if you can't reach Jupyter
+
+- **`Connection refused`** — server not running or port changed. Re-run `clawpyter.sh status -d <dir>`; if no live instance, start one.
+- **`port 8888 already in use`** — `clawpyter.sh start` auto-picks the next free port (8889, 8890, ...). Read the actual port from stdout.
+- **`Error: 'jupyter' is not on PATH`** — for native backend, the conda env was not activated. Tell the user to activate the env, or pick `-b docker` instead.
+- **`Error: docker daemon is unreachable`** — for docker backend, the daemon is down. Fall back to `-b native` if available.
+
+### Decision tree (when in doubt)
+
+1. Do you already have a URL and token from this conversation? → call `jupyter_connect_to_jupyter` with them. → done.
+2. Did you already start a Jupyter server for this `<notebook_dir>` in this session via `clawpyter.sh start`? → read `instances.json` at `<notebook_dir>/.clawpyter/instances.json` for the URL+token. → done.
+3. Otherwise → run the recipe above (`status` → `start` → `connect_to_jupyter`).
+4. Last resort: ask the user for the URL and token. (Only do this if Step 3 keeps failing — usually Docker isn't set up, or you don't have permission.)
 
 ---
 
@@ -126,10 +178,11 @@ shared Y.js CRDT room for each notebook you activate. Practical consequences:
   back to whole-notebook PUTs. In that mode, the user should not edit the
   notebook in their browser while you are working — last writer wins. When in
   doubt, the `jupyter_connect_to_jupyter` response tells you which mode is
-  active. Servers created by ClawPyter's own tooling (`./start-jpy.sh` or the
-  `clawpyter` Docker image) always have it — `start-jpy.sh` refuses to launch
-  without it — so REST mode normally means you were pointed at a foreign
-  Jupyter server.
+  active. Servers created by ClawPyter's own tooling (the
+  `/workspace/wsinsight/clawpyter/clawpyter.sh` lifecycle script, or the
+  `huangchtw/clawpyter` Docker image) always have it — `clawpyter.sh` refuses
+  to launch a native server without `jupyter_server_ydoc` loaded — so REST mode
+  normally means you were pointed at a foreign Jupyter server.
 
 ---
 

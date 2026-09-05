@@ -5,7 +5,7 @@
 # (unset -> random token printed in the banner; "" -> auth disabled). This
 # wrapper only adds the `-t none` spelling that start-jpy.sh uses.
 
-IMAGE_ID=clawpyter:latest
+IMAGE_ID=huangchtw/clawpyter:latest
 
 # The container's uid/gid is set at run time by the image entrypoint: by default
 # it becomes the owner of the mounted /workspace (so notebooks you create are

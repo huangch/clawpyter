@@ -38,8 +38,25 @@ packaged twice:
 ./build4hermes.sh        # pip deps + copy hermes-plugin/ -> ~/.hermes/plugins/clawpyter/
 ./build4openclaw.sh      # npm install + build, then `openclaw plugins install -l`
 ./docker-build-push.sh   # build clawpyter:latest -> push huangchtw/clawpyter:latest
-./clawpyter-docker-run.sh <notebook_dir>   # host-side: start the container
 ```
+
+### Running JupyterLab — use the unified `clawpyter` script
+
+The legacy `start-jpy.sh` / `stop-jpy.sh` / `clawpyter-docker-run.sh` scripts
+have moved to `bak_old_scripts/` (kept for reference; they still work). The
+single, replacement entry point is **`./clawpyter.sh`**:
+
+```sh
+./clawpyter.sh start    -d <notebook_dir> -b {native,docker} [-p <port>] [-t <token>|--no-token]
+./clawpyter.sh stop     -d <notebook_dir> -b {native,docker}
+./clawpyter.sh status   -d <notebook_dir> [-b {native,docker}] [--all]
+./clawpyter.sh logs     -d <notebook_dir> -b {native,docker} [-f]
+```
+
+State lives in `<data_dir>/.clawpyter/instances.json` (no `/tmp/*.pid`, no
+global `~/.hermes/` coupling — the agent or any launcher can read it). The
+wrapper uses `CLAWPYTER_IMAGE` if set (default `huangchtw/clawpyter:latest`)
+and `CLAWPYTER_NO_PULL=1` to skip the image pull.
 
 - Script naming rule: a `docker-` PREFIX means the script is baked into the
   image and runs inside it (`docker-entrypoint.sh`);
@@ -54,8 +71,7 @@ packaged twice:
 - The image needs no launch wrapper: `jupyter-server` reads `JUPYTER_TOKEN`
   itself (unset -> random token in the banner, `""` -> auth disabled), so `CMD`
   is a plain `jupyter lab ...` array. The container always listens on 8888;
-  `clawpyter-docker-run.sh` maps the host port and translates `-t none` to the
-  empty string.
+  `clawpyter` maps the host port and translates `--no-token` to the empty string.
 - `docker-entrypoint.sh` is kept **byte-for-byte identical** across wsinsight, sptxinsight,
   hplot, wsinsight-train and clawpyter. Copy it, don't edit one copy.
 
