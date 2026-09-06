@@ -12,7 +12,11 @@
 #                           Without this flag the script skips env creation and
 #                           only (re-)installs packages into the existing env.
 #   -d | --dev              Also install dev tooling (pytest, pytest-cov, ruff,
-#                           pre_commit).
+#                           pre_commit) AND the OpenClaw plugin toolchain
+#                           (Node.js 25, npm, yjs 13 via `npm install` inside
+#                           openclaw-plugin/), so `tsc -p tsconfig.json`
+#                           typechecks cleanly and `./build4openclaw.sh`
+#                           works end-to-end.
 #   -h | --help             Print this help message and exit.
 # <<<USAGE_END>>>
 #
@@ -120,6 +124,46 @@ pip install httpx websockets jupyter_nbmodel_client pycrdt
 echo "---- installing JupyterLab server + collaboration ----"
 pip install "jupyterlab>=4.0" "jupyter-collaboration>=4.0"
 
+# ── OpenClaw plugin toolchain (node + npm + yjs) ─────────────────────────────
+# This block is gated on `-d`/`--dev` because the OpenClaw plugin is a
+# TypeScript project shipped only via `./build4openclaw.sh`. Production users
+# who only run the Hermes plugin (`./build4hermes.sh`) do not need Node on this
+# host.
+#
+# Node.js 25.2.1 matches the `conda env create -f wsi.yml` baseline used
+# internally; npm ships in the same conda-forge package. yjs is a PEER-OPTIONAL
+# dependency (`peerDependenciesMeta.yjs.optional = true`), so it does NOT install
+# by default — but `collab-client.ts` imports from `yjs/...`, so without it
+# `tsc --noEmit` fails at the import-resolution step. We pin yjs 13.5.x to
+# match peerDependencies. `13` is a major-version floor; `yjs` does not yet
+# publish semver-stable minor versions past 13.6.x, so this matches what users
+# will get with `npm install yjs` directly.
+if [ "${DO_DEV}" -eq 1 ]; then
+    echo "---- installing OpenClaw plugin toolchain ----"
+    # nodejs from conda-forge bundles npm; this command is idempotent.
+    # `--override-channels` is already in scope for the env-create step above,
+    # but `conda install` inside a non-`--override-channels` env would also try
+    # `pkgs/main` here. Keep the explicit channel so the solve stays minimal.
+    conda install -y -c conda-forge "nodejs>=25,<26" 2>/dev/null || \
+        conda install -y "nodejs>=25,<26"
+    node --version
+    npm --version
+
+    # yjs + the rest of the openclaw-plugin tree are pinned in package.json.
+    # Run `npm install` inside the plugin directory so `tsc -p tsconfig.json`
+    # and `./build4openclaw.sh` both work without further setup.
+    if [ -d "${SCRIPT_DIR}/openclaw-plugin" ]; then
+        pushd "${SCRIPT_DIR}/openclaw-plugin" >/dev/null
+        # `npm install` honours package.json (peer + devDependencies). yjs
+        # is declared as both — runtime users still skip it under
+        # `--omit=dev`, but a fresh `npm install` in this conda env pulls
+        # it in so `tsc -p tsconfig.json` resolves the imports in
+        # collab-client.ts.
+        npm install --no-audit --no-fund
+        popd >/dev/null
+    fi
+fi
+
 if [ "${DO_DEV}" -eq 1 ]; then
     echo "---- installing dev tooling ----"
     pip install pytest pytest-cov ruff pre_commit
@@ -175,6 +219,16 @@ smoke "jupyter-collaboration enabled" \
 
 if [ "${DO_DEV}" -eq 1 ]; then
     smoke "pytest importable (dev)" python -c 'import pytest'
+    smoke "node on PATH (dev)"      command -v node
+    smoke "npm  on PATH (dev)"      command -v npm
+    smoke "yjs resolvable (dev)"    \
+        bash -c "cd '${SCRIPT_DIR}/openclaw-plugin' && node -e \"import('yjs').then(m => { if (!m.Doc) process.exit(1) })\""
+    smoke "tsc available (dev)"      \
+        bash -c "cd '${SCRIPT_DIR}/openclaw-plugin' && test -x node_modules/.bin/tsc"
+    smoke "openclaw-plugin typechecks (dev)" \
+        bash -c "cd '${SCRIPT_DIR}/openclaw-plugin' && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json"
+    smoke "hermes plugin pytest (dev)" \
+        bash -c "cd '${SCRIPT_DIR}' && python3 -m pytest --no-header -q"
 fi
 
 if [ "${SMOKE_FAIL}" -ne 0 ]; then

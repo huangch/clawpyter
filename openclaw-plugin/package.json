@@ -22,15 +22,18 @@
   "dependencies": {
     "@sinclair/typebox": "^0.34.49"
   },
-  "//": "yjs is a peer/optional runtime dependency. The plugin loads and runs without it (collab falls back silently). Install it to enable Y.js CRDT co-editing with jupyter-collaboration.",
+  "//": "yjs is a peer/optional runtime dependency. The plugin loads and runs without it (collab falls back silently; Contents-API path). End users that want Y.js CRDT co-editing install yjs themselves (peer dep with optional=true), but we ALSO declare it as a devDependency so `tsc --noEmit -p tsconfig.json` works out of the box after `npm install` — collab-client.ts imports from yjs/... and a missing module fails the typecheck. The two declarations are consistent: both resolve to a 13.x major; runtime users on a peer-clean machine still skip it because npm install --omit=dev drops devDependencies.",
   "peerDependencies": {
-    "yjs": ">=13.5.22"
+    "yjs": "13.5"
   },
   "peerDependenciesMeta": {
-    "yjs": { "optional": true }
+    "yjs": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "yjs": "^13.6.32"
   }
 }
