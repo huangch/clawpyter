@@ -74,6 +74,30 @@ README's "When to use / when not to use" section is the canonical statement.
 ./docker-build-push.sh   # build clawpyter:latest -> push huangchtw/clawpyter:latest
 ```
 
+### Tests (Hermes plugin Python suite)
+
+The Hermes handler surface is exercised by a sync pytest suite under
+`hermes-plugin/tests/` (35 tests covering `jupyter_*` server-, notebook-, and
+cell-level handlers). Tests use the canonical Python module name `hermes_plugin`
+via a dev-only symlink so Python's import system can resolve the directory —
+the source-of-truth path `hermes-plugin/` has a dash, which Python identifiers
+cannot use.
+
+```sh
+# One-time: create the dev-only import alias (gitignored).
+ln -sf hermes-plugin hermes_plugin
+
+# Run:
+python3 -m pytest               # uses pytest.ini testpaths = hermes_plugin/tests
+python3 -m pytest -v            # verbose
+python3 -m pytest -k move_cell  # narrow via pytest -k filter
+```
+
+The suite does NOT need pytest-asyncio (`hermes-plugin/tests/_bootstrap.py`
+provides a `run()` helper that wraps handlers under `asyncio.run`). CI is
+local today; add `-m pytest tests/` to the conda-setup `-d` dev workflow if
+you wire CI later.
+
 ### Running JupyterLab — use the unified `clawpyter` script
 
 The legacy `start-jpy.sh` / `stop-jpy.sh` / `clawpyter-docker-run.sh` scripts

@@ -432,7 +432,7 @@ def _resolve_target_session(args: dict) -> Optional[dict]:
     Multi-notebook support: when `notebook_name` is provided, look it up in
     `_state.sessions` and use that session instead of the current one. When
     omitted, use the existing current-notebook behaviour for backwards
-    compatibility. The session dict exposes `path`, `kernel_id`, and `name`.
+    compatibility. The session dict exposes `name`, `path`, `kernel_id`, and `session_id`.
     """
     name = args.get("notebook_name", "")
     if isinstance(name, str) and name.strip():
@@ -556,7 +556,10 @@ async def jupyter_list_files(args: dict, **kwargs) -> str:
 
 
 async def jupyter_list_kernels(args: dict, **kwargs) -> str:
-    kernels = await _req("GET", "/api/kernels")
+    try:
+        kernels = await _req("GET", "/api/kernels")
+    except Exception as e:
+        return f"Jupyter kernels\n\n[ERROR] Failed to list kernels: {e}"
     try:
         specs_response = await _req("GET", "/api/kernelspecs")
     except Exception:
@@ -601,6 +604,7 @@ async def jupyter_create_notebook(args: dict, **kwargs) -> str:
     await _create_notebook(resolved_name)
     session = await _create_session(resolved_name)
     _state.sessions[resolved_name] = {
+        "name": resolved_name,
         "path": resolved_name,
         "kernel_id": session["kernel"]["id"],
         "session_id": session["id"],
@@ -654,6 +658,7 @@ async def jupyter_use_notebook(args: dict, **kwargs) -> str:
 
         session = await _create_session(notebook_path, requested_kernel_id or None)
         _state.sessions[notebook_name] = {
+            "name": notebook_name,
             "path": notebook_path,
             "kernel_id": session["kernel"]["id"],
             "session_id": session["id"],
@@ -1180,9 +1185,11 @@ async def jupyter_delete_cell(args: dict, **kwargs) -> str:
                 indices.append(int(x))
             except (TypeError, ValueError):
                 return f"Delete cells\n\n[ERROR] Bad cell_indices entry: {x!r}"
-    if raw_ids is not None:
-        if not raw_ids:
-            return "Delete cells\n\n[ERROR] cell_ids_to_delete must be a non-empty list."
+    raw_ids_list: list[str] = []
+    if raw_ids:
+        if not isinstance(raw_ids, list):
+            return "Delete cells\n\n[ERROR] cell_ids_to_delete must be a list."
+        raw_ids_list = [str(x) for x in raw_ids]
         # Snapshot cell ids → indices ONCE, in stable order, before any mutation.
         if room is not None:
             id_to_idx = {}
@@ -1196,14 +1203,14 @@ async def jupyter_delete_cell(args: dict, **kwargs) -> str:
                 (c.get("id") or ""): i
                 for i, c in enumerate(nb_snap.get("cells", []) or [])
             }
-        missing = [cid for cid in raw_ids if cid not in id_to_idx]
+        missing = [cid for cid in raw_ids_list if cid not in id_to_idx]
         if missing:
             return (
                 "Delete cells\n\n[ERROR] The following cell_ids_to_delete were "
                 f"not found: {missing}. No cells were deleted (atomic semantic)."
             )
         # Id-supplied targets win on ties with index targets; merge dedup.
-        indices = sorted(set(indices) | {id_to_idx[c] for c in raw_ids}, reverse=True)
+        indices = sorted(set(indices) | {id_to_idx[c] for c in raw_ids_list}, reverse=True)
     if not indices:
         return "Delete cells\n\n[ERROR] Provide at least one of cell_indices or cell_ids_to_delete."
     # Delete in descending index order so removing one cell doesn't shift
