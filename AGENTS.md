@@ -22,6 +22,31 @@ packaged twice:
   image with collaboration enabled. The image deliberately does **not** contain the
   plugins — those belong in the agent's environment.
 
+## Product boundary
+
+ClawPyter is the **native Jupyter integration for Hermes Agent and OpenClaw** —
+nothing more, nothing less. The plugins in `hermes-plugin/` and `openclaw-plugin/`
+are loaded **inside** the agent's process via the runtime's plugin contract; no
+external MCP server is involved.
+
+**Deliberately out of scope:**
+
+- **MCP server entry point.** Don't add one. Users on GitHub Copilot / Continue
+  / Cline / Cursor / Aider should install
+  [`jupyter-mcp-server`](https://github.com/datalayer/jupyter-mcp-server) instead
+  — it's their first-party tool, ships through ClawHub, and that's its job.
+- **JupyterLab extension mode.** jmcp can run as a JupyterLab embedded extension
+  (`JUPYTER_SERVER` mode). ClawPyter cannot, and shouldn't try: the value here
+  is the native agent-runtime integration, not the embedded Jupyter integration.
+- **Cloud sandbox backends.** jmcp ships integration with Colab / Kaggle /
+  Modal / Daytona / E2B / Coreweave / Cloudflare / Datalayer through the
+  `code-sandboxes` package. ClawPyter is local-Jupyter only; reach for jmcp when
+  agents need remote GPU.
+
+If a future contributor proposes an MCP-server or extension-mode entry point,
+redirect them to `jupyter-mcp-server` instead of expanding scope here. The
+README's "When to use / when not to use" section is the canonical statement.
+
 ## Environment
 
 - **Always run `conda activate claude` before any Python / pip command.**

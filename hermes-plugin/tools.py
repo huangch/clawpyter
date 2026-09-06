@@ -1154,16 +1154,61 @@ async def jupyter_read_cell(args: dict, **kwargs) -> str:
 
 
 async def jupyter_delete_cell(args: dict, **kwargs) -> str:
-    current = _state.current_notebook
-    if not current:
-        return "Delete cells\n\nNo active notebook. Use jupyter_use_notebook first."
+    sess = _resolve_target_session(args)
+    if sess is None:
+        nb_hint = (
+            " Unknown notebook_name."
+            if isinstance(args.get("notebook_name"), str) and args.get("notebook_name")
+            else " Use jupyter_use_notebook first."
+        )
+        return f"Delete cells\n\nNo active notebook.{nb_hint}"
+    current = sess["name"]
 
-    sess = _state.sessions[current]
     room = _get_collab_room(current)
 
     raw_indices = args.get("cell_indices", [])
+    raw_ids = args.get("cell_ids_to_delete", [])
     include_source = args.get("include_source", True)
-    indices = sorted([int(i) for i in raw_indices], reverse=True)
+
+    # jmcp-compat atomic semantic: when cell_ids are supplied, every id is
+    # validated up front and the whole call fails rather than partially
+    # deleting the notebook. We also merge + dedup if both lists are given.
+    indices: list[int] = []
+    if raw_indices is not None:
+        for x in raw_indices:
+            try:
+                indices.append(int(x))
+            except (TypeError, ValueError):
+                return f"Delete cells\n\n[ERROR] Bad cell_indices entry: {x!r}"
+    if raw_ids is not None:
+        if not raw_ids:
+            return "Delete cells\n\n[ERROR] cell_ids_to_delete must be a non-empty list."
+        # Snapshot cell ids → indices ONCE, in stable order, before any mutation.
+        if room is not None:
+            id_to_idx = {}
+            for i in range(room.cell_count()):
+                cid = room.get_cell(i).get("id")
+                if cid:
+                    id_to_idx[cid] = i
+        else:
+            nb_snap = await _get_notebook(sess["path"])
+            id_to_idx = {
+                (c.get("id") or ""): i
+                for i, c in enumerate(nb_snap.get("cells", []) or [])
+            }
+        missing = [cid for cid in raw_ids if cid not in id_to_idx]
+        if missing:
+            return (
+                "Delete cells\n\n[ERROR] The following cell_ids_to_delete were "
+                f"not found: {missing}. No cells were deleted (atomic semantic)."
+            )
+        # Id-supplied targets win on ties with index targets; merge dedup.
+        indices = sorted(set(indices) | {id_to_idx[c] for c in raw_ids}, reverse=True)
+    if not indices:
+        return "Delete cells\n\n[ERROR] Provide at least one of cell_indices or cell_ids_to_delete."
+    # Delete in descending index order so removing one cell doesn't shift
+    # the position of any later one in the batch.
+
     deleted_sources = []
 
     if room is not None:
@@ -1463,25 +1508,55 @@ async def jupyter_clear_cell_output(args: dict, **kwargs) -> str:
 
 
 async def jupyter_move_cell(args: dict, **kwargs) -> str:
-    """Relocate one cell from source_index to destination_index (alias: target_index)."""
-    current = _state.current_notebook
-    if not current:
-        return "Move cell\n\nNo active notebook. Use jupyter_use_notebook first."
-    sess = _state.sessions[current]
+    """Relocate one cell. Each endpoint can be addressed by index OR by cell_id."""
+    sess = _resolve_target_session(args)
+    if sess is None:
+        nb_hint = (
+            " Unknown notebook_name."
+            if isinstance(args.get("notebook_name"), str) and args.get("notebook_name")
+            else " Use jupyter_use_notebook first."
+        )
+        return f"Move cell\n\nNo active notebook.{nb_hint}"
+    current = sess["name"]
 
-    source_index = int(args.get("source_index", -1))
-    # Accept either jmcp-style `target_index` or legacy `destination_index`.
-    if "target_index" in args:
-        destination_index = int(args["target_index"])
-    else:
-        destination_index = int(args.get("destination_index", -1))
+    source_id = args.get("source_cell_id")
+    target_id = args.get("target_cell_id")
+
+    if source_id is None and args.get("source_index") is None:
+        return "Move cell\n\n[ERROR] Provide either source_index or source_cell_id."
+    if target_id is None and "target_index" not in args and "destination_index" not in args:
+        return "Move cell\n\n[ERROR] Provide target_index, target_cell_id, or destination_index."
 
     nb = await _get_notebook_on_room(sess["path"]) if await _ensure_collab_probed() else await _get_notebook_raw(sess["path"])
     cells = nb.get("cells", [])
+
+    # Resolve source first so the target id — if any — points at the pre-move state.
+    # jmcp's move_cell does the same: it resolves both endpoints against the
+    # unchanged notebook so we never compute a target on something the source
+    # already left.
+    try:
+        source_index = await _resolve_cell_index(
+            nb,
+            int(args["source_index"]) if args.get("source_index") is not None else None,
+            source_id,
+        )
+    except ValueError as e:
+        return f"Move cell\n\n[ERROR] {e}"
+
+    if target_id is not None:
+        try:
+            destination_index = await _resolve_cell_index(nb, None, target_id)
+        except ValueError as e:
+            return f"Move cell\n\n[ERROR] {e}"
+    elif "target_index" in args:
+        destination_index = int(args["target_index"])
+    else:
+        destination_index = int(args["destination_index"])
+
     if source_index < 0 or source_index >= len(cells):
-        return f"Move cell\n\nsource_index {source_index} out of range (notebook has {len(cells)} cells)."
+        return f"Move cell\n\nsource {source_index} out of range (notebook has {len(cells)} cells)."
     if destination_index < 0 or destination_index >= len(cells):
-        return f"Move cell\n\ndestination_index {destination_index} out of range (notebook has {len(cells)} cells)."
+        return f"Move cell\n\ntarget {destination_index} out of range (notebook has {len(cells)} cells)."
     if source_index == destination_index:
         return "Move cell\n\nsource and destination are identical; nothing moved."
 
@@ -1493,7 +1568,9 @@ async def jupyter_move_cell(args: dict, **kwargs) -> str:
     cells.insert(destination_index, moved)
     await _save_notebook_via_collab_or_put(sess["path"], nb)
 
-    return f"Move cell\n\nMoved cell from index {source_index} to index {destination_index}."
+    return (
+        f"Move cell\n\nMoved cell from index {source_index} to index {destination_index}."
+    )
 
 
 async def jupyter_interrupt_cell(args: dict, **kwargs) -> str:

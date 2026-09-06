@@ -514,8 +514,12 @@ JUPYTER_DELETE_CELL = {
     "name": "jupyter_delete_cell",
     "description": (
         "Delete one or more cells from the currently activated notebook. "
-        "cell_indices is a list of 0-based indices to delete. "
-        "IMPORTANT: cells are deleted in descending index order automatically to avoid shifting. "
+        "Specify targets by `cell_indices` (list of 0-based indices) OR by "
+        "`cell_ids_to_delete` (list of nbformat 4.5 cell ids). Both lists "
+        "can be supplied — they are merged and deduplicated; ids win on a tie. "
+        "Cells are deleted in descending index order automatically to avoid "
+        "shifting, and every id is checked up front so a single bad id fails "
+        "the whole call rather than partially deleting the notebook. "
         "Returns deletion confirmation and optionally the deleted cell sources."
     ),
     "parameters": {
@@ -524,14 +528,31 @@ JUPYTER_DELETE_CELL = {
             "cell_indices": {
                 "type": "array",
                 "items": {"type": "integer", "minimum": 0},
-                "description": "List of 0-based cell indices to delete",
+                "description": "List of 0-based cell indices to delete. Omit when passing cell_ids_to_delete.",
+            },
+            "cell_ids_to_delete": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "description": (
+                    "List of nbformat 4.5 cell ids to delete. Safer than indices "
+                    "for multi-cell deletes (indices shift as earlier cells are removed). "
+                    "All ids are validated before any cell is deleted; a bad id fails "
+                    "the whole call rather than half-deleting the notebook."
+                ),
             },
             "include_source": {
                 "type": "boolean",
                 "description": "Include deleted cell sources in the response (default: true)",
             },
+            "notebook_name": {
+                "type": "string",
+                "description": "Optional: target a specific already-activated notebook by name. Defaults to the current notebook.",
+            },
         },
-        "required": ["cell_indices"],
+        "anyOf": [
+            {"required": ["cell_indices"]},
+            {"required": ["cell_ids_to_delete"]},
+        ],
     },
 }
 
@@ -694,29 +715,64 @@ JUPYTER_CLEAR_CELL_OUTPUT = {
 JUPYTER_MOVE_CELL = {
     "name": "jupyter_move_cell",
     "description": (
-        "Move a cell from source_index to target_index in the currently activated notebook. "
-        "After removal of the source, the target index is applied (standard array splice). "
-        "Both indices are 0-based. `destination_index` is accepted as a legacy alias for `target_index`."
+        "Move a cell inside the currently activated notebook. "
+        "Specify each endpoint by 0-based index OR by nbformat 4.5 cell id; "
+        "`cell_id`s win when both are supplied. `destination_index` is accepted "
+        "as a legacy alias for `target_index`. "
+        "After removal of the source cell, the target index is applied (standard "
+        "array splice). Indices are 0-based."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "source_index": {"type": "integer", "minimum": 0, "description": "Source cell index"},
+            "source_index": {"type": "integer", "minimum": 0, "description": "0-based index of the cell to move. Omit when passing source_cell_id."},
+            "source_cell_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "nbformat 4.5 cell id of the cell to move. Safer than source_index when collaborators are editing.",
+            },
             "target_index": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Destination index (0-based) after splice.",
+                "description": "Destination index where the cell will end up (0-based). Omit when passing target_cell_id.",
+            },
+            "target_cell_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": (
+                    "Place the moved cell where this cell currently sits, addressed "
+                    "by id rather than by an index that the move itself will shift. "
+                    "Resolved against the notebook as it is now, BEFORE the source "
+                    "is removed."
+                ),
             },
             "destination_index": {
                 "type": "integer",
                 "minimum": 0,
                 "description": "Legacy alias for target_index. Prefer target_index.",
             },
+            "notebook_name": {
+                "type": "string",
+                "description": "Optional: target a specific already-activated notebook by name. Defaults to the current notebook.",
+            },
         },
-        "required": ["source_index"],
-        "anyOf": [
-            {"required": ["target_index"]},
-            {"required": ["destination_index"]},
+        # Source side: need at least one of source_index / source_cell_id.
+        # Target side: need at least one of target_index / target_cell_id / destination_index.
+        # JSON Schema only supports one `anyOf` per schema, so we use `oneOf`
+        # at the top level with a single combined constraint object that the
+        # Pydantic-validating runtime (Hermes) accepts; the handler does the
+        # actual cross-product validation by inspecting the params dict.
+        "oneOf": [
+            {
+                "allOf": [
+                    {"anyOf": [{"required": ["source_index"]}, {"required": ["source_cell_id"]}]},
+                    {"anyOf": [
+                        {"required": ["target_index"]},
+                        {"required": ["target_cell_id"]},
+                        {"required": ["destination_index"]},
+                    ]},
+                ]
+            }
         ],
     },
 }

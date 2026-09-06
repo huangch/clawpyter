@@ -47,6 +47,39 @@ ClawPyter exposes **36 tools** (33 core + 3 compatibility wrappers) that allow t
 
 ---
 
+## When to use ClawPyter (and when **not** to)
+
+ClawPyter is the **native Jupyter integration for Hermes Agent and OpenClaw**. Both runtimes load it as a plugin that ships alongside the agent, so tool dispatch lives **in the same process as the agent** — no extra MCP server to install, configure, keep running, or version-pin against the agent.
+
+### Use ClawPyter if your agent runtime is one of these
+
+| Runtime | Plugin form | What you get |
+|---|---|---|
+| **Hermes Agent** | `~/.hermes/plugins/clawpyter/` (Python) | 36 tools, Y.js CRDT co-editing, async `run_async=true` jobs |
+| **OpenClaw** | `~/.openclaw/plugins/clawpyter/` (TypeScript) | Same 36 tools, TypeBox-typed SDK, contracts.tools manifest |
+
+Both ship **the same 36 tools**, **the same notebooks**, **the same kernel pool**, and can be installed side by side on the same machine without conflicting with each other (Hermes uses Python, OpenClaw uses Node — they talk to the same JupyterLab instance at the socket level, not through ClawPyter).
+
+### Don't use ClawPyter if your agent runtime is one of these
+
+| Runtime | Use this instead |
+|---|---|
+| **GitHub Copilot** (VS Code / github.com) | [`jupyter-mcp-server`](https://github.com/datalayer/jupyter-mcp-server) — Datalayer's first-party MCP server. Has ClawHub distribution, pluggy extension hooks, 9+ sandbox backends (Colab, Kaggle, Modal, Daytona, …), and a JupyterLab embedded mode. |
+| **Continue / Cline / Cursor / Aider** | [`jupyter-mcp-server`](https://github.com/datalayer/jupyter-mcp-server) — these runtimes speak MCP, not Hermes plugin or OpenClaw plugin. |
+| **A Jupyter user with no agent** | The JupyterLab UI directly — ClawPyter adds nothing. |
+
+### Why ClawPyter is **not** an MCP server
+
+ClawPyter deliberately does **not** expose itself as an MCP server. We share the Jupyter tool **surface** with `jupyter-mcp-server` (both project their respective MCP clients / agents onto the JupyterLab REST + WebSocket endpoints), but the integration model is different on purpose:
+
+- ClawPyter is **plugin-or-nothing** — it only makes sense inside an agent that already speaks the Hermes or OpenClaw plugin contract. Shipping an MCP shim would invite users from Copilot/Continue/Cline to install it for the wrong reasons, then blame either project when something doesn't work.
+- `jupyter-mcp-server` is **MCP-or-everything** — it intentionally serves any MCP-capable client, including the editor / IDE agents listed above. That's its job; we don't compete on it.
+
+If you're picking **one** Jupyter tool for a Hermes/OpenClaw deployment: **ClawPyter**.
+If you're picking **one** for a Copilot/Continue/Cline deployment: **`jupyter-mcp-server`**.
+
+---
+
 ## Architecture
 
 ```

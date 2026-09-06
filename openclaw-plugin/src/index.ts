@@ -1389,32 +1389,74 @@ export default definePluginEntry({
     {
       name: "jupyter_delete_cell",
       description:
-        "Delete a specific cell or multiple cells from the currently activated notebook. Requires cell_indices (list of 0-based indices). Optional include_source (default: true) includes the source code of deleted cells. IMPORTANT: When deleting many cells, delete them in descending order of their index to avoid index shifting. Returns success message with deletion confirmation and source code of deleted cells (if include_source=true).",
+        "Delete one or more cells from the currently activated notebook. Specify targets by `cell_indices` (list of 0-based indices) OR by `cell_ids_to_delete` (list of nbformat 4.5 cell ids). Both lists can be supplied — they are merged and deduplicated; ids win on a tie. Cells are deleted in descending index order automatically to avoid shifting, and every id is checked up front so a single bad id fails the whole call rather than partially deleting the notebook. Returns success message and source code of deleted cells (if include_source=true).",
       parameters: Type.Object({
-        cell_indices: Type.Array(Type.Integer({ minimum: 0 })),
+        notebook_name: Type.Optional(Type.String()),
+        cell_indices: Type.Optional(Type.Array(Type.Integer({ minimum: 0 }))),
+        cell_ids_to_delete: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
         include_source: Type.Optional(Type.Boolean()),
       }),
       async execute(_id: string, params: Record<string, unknown>) {
         console.log("Tool execution:", { name: "jupyter_delete_cell", params, _id });
 
-        const current = client.getCurrentNotebook();
-        if (!current) {
-          return JupyterDirectClient.asToolText("Delete cells", "No active notebook. Use jupyter_use_notebook first.");
+        const target = resolveTargetSession(client, params);
+        if (!target) {
+          const nbHint =
+            typeof params.notebook_name === "string"
+              ? ` Unknown notebook_name "${params.notebook_name}".`
+              : " Use jupyter_use_notebook first.";
+          return JupyterDirectClient.asToolText("Delete cells", `No active notebook.${nbHint}`);
         }
-        const sess = client.getSession(current)!;
+        const sess = target.session;
 
-        const rawIndices = Array.isArray(params.cell_indices) ? (params.cell_indices as number[]) : [];
+        const rawIndices = Array.isArray(params.cell_indices)
+          ? (params.cell_indices as unknown[]).map((v) => Number(v)).filter((n) => Number.isInteger(n) && n >= 0)
+          : [];
+        const rawIds = Array.isArray(params.cell_ids_to_delete)
+          ? (params.cell_ids_to_delete as unknown[]).map((v) => String(v))
+          : [];
         const includeSource = params.include_source !== false;
+
+        if (rawIndices.length === 0 && rawIds.length === 0) {
+          return JupyterDirectClient.asToolText(
+            "Delete cells",
+            "Provide at least one of cell_indices or cell_ids_to_delete.",
+          );
+        }
 
         // Validate + capture deleted sources BEFORE the mutator runs.
         const preview = await loadNotebookFull(sess.path);
-        const validIndices = rawIndices.filter((i) => i >= 0 && i < preview.cells.length);
-        // Sort descending to avoid index shifting
-        const indices = [...validIndices].sort((a, b) => b - a);
+        let indices: number[];
+        if (rawIds.length > 0) {
+          // jmcp-compat atomic semantic: every id validated up front; if any
+          // are missing abort the whole call (mirrors jmcp's resolve_many).
+          const idToIdx = new Map<string, number>();
+          preview.cells.forEach((c, i) => {
+            const cid = (c as { id?: string }).id;
+            if (cid) idToIdx.set(cid, i);
+          });
+          const missing = rawIds.filter((id) => !idToIdx.has(id));
+          if (missing.length > 0) {
+            return JupyterDirectClient.asToolText(
+              "Delete cells",
+              `[ERROR] The following cell_ids_to_delete were not found: ${JSON.stringify(missing)}. No cells were deleted (atomic semantic).`,
+            );
+          }
+          const idSet = new Set<number>(rawIds.map((id) => idToIdx.get(id) as number).filter((n) => Number.isInteger(n)));
+          const merged = new Set<number>([...rawIndices, ...idSet]);
+          indices = [...merged].sort((a, b) => b - a);
+        } else {
+          indices = [...rawIndices].sort((a, b) => b - a);
+        }
+        // Capture deleted sources BEFORE the mutator runs (desc-sorted ids are
+        // still valid against the original snapshot).
         const deletedSources: string[] = [];
         if (includeSource) {
           for (const idx of indices) {
-            deletedSources.push(`[${idx}] ${preview.cells[idx].source}`);
+            if (idx >= 0 && idx < preview.cells.length) {
+              const src = preview.cells[idx].source ?? "";
+              deletedSources.push(`[${idx}] ${src}`);
+            }
           }
         }
 
@@ -1719,43 +1761,88 @@ export default definePluginEntry({
   );
 
   // ---------------------------------------------------------------------------
-  // jupyter_move_cell — relocate a single cell by (source_index, target_index)
+  // jupyter_move_cell — relocate one cell (each endpoint via index OR cell_id)
   // ---------------------------------------------------------------------------
   api.registerTool(
     {
       name: "jupyter_move_cell",
       description:
-        "Move a cell from source_index to target_index in the currently activated notebook. The cell end-up position is the target index after removal of the source (i.e. standard array splice). Both indices are 0-based. `destination_index` is accepted as a legacy alias for `target_index`.",
+        "Move a cell inside the currently activated notebook. Specify each endpoint by 0-based index OR by nbformat 4.5 cell id; `cell_id`s win when both are supplied. `destination_index` is accepted as a legacy alias for `target_index`. After removal of the source cell, the target index is applied (standard array splice). Indices are 0-based.",
       parameters: Type.Object({
-        source_index: Type.Integer({ minimum: 0 }),
+        notebook_name: Type.Optional(Type.String()),
+        source_index: Type.Optional(Type.Integer({ minimum: 0 })),
+        source_cell_id: Type.Optional(Type.String({ minLength: 1 })),
         target_index: Type.Optional(Type.Integer({ minimum: 0 })),
+        target_cell_id: Type.Optional(Type.String({ minLength: 1 })),
         destination_index: Type.Optional(Type.Integer({ minimum: 0 })),
       }),
       async execute(_id: string, params: Record<string, unknown>) {
         console.log("Tool execution:", { name: "jupyter_move_cell", params, _id });
 
-        const current = client.getCurrentNotebook();
-        if (!current) return JupyterDirectClient.asToolText("Move cell", "No active notebook. Use jupyter_use_notebook first.");
-        const sess = client.getSession(current)!;
+        const target = resolveTargetSession(client, params);
+        if (!target) {
+          const nbHint =
+            typeof params.notebook_name === "string"
+              ? ` Unknown notebook_name "${params.notebook_name}".`
+              : " Use jupyter_use_notebook first.";
+          return JupyterDirectClient.asToolText("Move cell", `No active notebook.${nbHint}`);
+        }
+        const sess = target.session;
+
+        const sourceId = typeof params.source_cell_id === "string" ? params.source_cell_id : null;
+        const targetId = typeof params.target_cell_id === "string" ? params.target_cell_id : null;
+        const hasSourceIdx = typeof params.source_index === "number";
+        const hasTargetIdx =
+          typeof params.target_index === "number" ||
+          typeof params.destination_index === "number";
+
+        if (!sourceId && !hasSourceIdx) {
+          return JupyterDirectClient.asToolText(
+            "Move cell",
+            "Provide either source_index or source_cell_id.",
+          );
+        }
+        if (!targetId && !hasTargetIdx) {
+          return JupyterDirectClient.asToolText(
+            "Move cell",
+            "Provide target_index, target_cell_id, or destination_index.",
+          );
+        }
+
         const preview = await loadNotebookFull(sess.path);
 
-        const src = typeof params.source_index === "number" ? params.source_index : -1;
-        const dst =
-          typeof params.target_index === "number"
-            ? params.target_index
-            : typeof params.destination_index === "number"
-              ? params.destination_index
-              : -1;
+        // Resolve source first so the target id (if any) resolves against the
+        // pre-move state (jmcp parity — resolve both against the unchanged
+        // notebook before mutating).
+        let src: number;
+        try {
+          src = resolveCellIndex(preview, hasSourceIdx ? (params.source_index as number) : null, sourceId);
+        } catch (e) {
+          return JupyterDirectClient.asToolText("Move cell", `[ERROR] ${String(e)}`);
+        }
+        let dst: number;
+        if (targetId !== null) {
+          try {
+            dst = resolveCellIndex(preview, null, targetId);
+          } catch (e) {
+            return JupyterDirectClient.asToolText("Move cell", `[ERROR] ${String(e)}`);
+          }
+        } else if (typeof params.target_index === "number") {
+          dst = params.target_index;
+        } else {
+          dst = params.destination_index as number;
+        }
+
         if (src < 0 || src >= preview.cells.length) {
           return JupyterDirectClient.asToolText(
             "Move cell",
-            `source_index ${src} is out of range. Notebook has ${preview.cells.length} cells.`,
+            `source ${src} is out of range. Notebook has ${preview.cells.length} cells.`,
           );
         }
         if (dst < 0 || dst >= preview.cells.length) {
           return JupyterDirectClient.asToolText(
             "Move cell",
-            `target_index ${dst} is out of range. Notebook has ${preview.cells.length} cells.`,
+            `target ${dst} is out of range. Notebook has ${preview.cells.length} cells.`,
           );
         }
         if (src === dst) {
