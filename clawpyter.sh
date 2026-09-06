@@ -1113,35 +1113,57 @@ cmd_list() {
 
     local any=0
     for d in "${dirs[@]}"; do
-        # We could just call status_for here, but it doesn't tell us whether
-        # to surface the data_dir — print as a banner per project for the
-        # no-`--data-dir` case.
-        if [[ -z "$data_dir" ]]; then
-            echo "Project: $d"
-        fi
+        # Suppress the bare `Project:` banner for default-mode empty projects
+        # so `list` after a stop reads like `ps` (no silent banners). The
+        # python heredoc prints the banner itself in the right conditions
+        # so empty-state messages line up with their project context.
         # Show-all on `status_for` is the third arg (default 1 = show
         # stale). Map --all to show_all=1; otherwise hide stale so the list
         # reads like ps.
         local show_all=0
         [[ "$all" == "1" ]] && show_all=1
-        # Inline a slim variant of status_for so we can render even when
-        # the file is missing/empty rather than printing "(no instances)"
-        # for every clean project.
         local f; f="$(state_file "$d")"
-        if [[ ! -f "$f" ]]; then
-            [[ -z "$data_dir" ]] || echo "  (no instances)"
-            [[ -n "$data_dir" && "$prune" == "1" ]] && global_state_unregister "$d"
+        # Prune (when asked) for both missing-state-file and empty-state-file
+        # cases; the registry holds an entry even if the project never
+        # produced one, so a list can reveal those orphans.
+        if [[ ! -f "$f" || ! -s "$f" ]]; then
+            [[ "$prune" == "1" ]] && global_state_unregister "$d"
+            # When --data-dir was explicit AND --all was passed, the user
+            # wants to see "Project: …" + "(no instances)" so they know
+            # the registry entry is there but the state file is empty.
+            # Default-mode `list` stays silent so empty projects after a
+            # stop don't print a silent banner.
+            if [[ -n "$data_dir" && "$show_all" == "1" ]]; then
+                echo "Project: $d"
+                echo "  (no instances)"
+                any=1
+            elif [[ -z "$data_dir" && "$show_all" == "1" && ${#dirs[@]} -eq 1 ]]; then
+                # Single-project list (no -d) with --all on a missing-file
+                # project: still show "(no instances)" so the user can see
+                # the data-dir was registered but state is empty.
+                echo "Project: $d"
+                echo "  (no instances)"
+                any=1
+            fi
             continue
         fi
         local out
-        out="$(python3 - "$f" "$show_all" "$backend" <<'PY'
+        # The python heredoc now emits ONLY indented body lines (data
+        # rows / "(no instances)" / "(state invalid)" prefixes). The
+        # `Project: …` header is emitted once at the shell level below
+        # so its indentation matches the rest of clawpyter.sh, not the
+        # 2-space indent that `echo $out | sed 's/^/  /'` would apply.
+        local banner=""; banner="$([[ -n "$data_dir" ]] && echo yes || echo no)"
+        out="$(python3 - "$f" "$show_all" "$backend" "$d" "$banner" <<'PY'
 import json, os, subprocess, sys
-path, show_all, backend_filter = sys.argv[1], sys.argv[2] == "1", sys.argv[3]
+path, show_all, backend_filter, project_dir, want_banner = (
+    sys.argv[1], sys.argv[2] == "1", sys.argv[3], sys.argv[4], sys.argv[5] == "yes"
+)
 try:
     with open(path) as fh:
         data = json.load(fh)
 except (OSError, ValueError):
-    print(f'  (state invalid: {path})')
+    print("(state invalid: {path})".format(path=path))
     sys.exit(0)
 insts = data.get("instances", {})
 def alive(inst):
@@ -1167,19 +1189,32 @@ for k, inst in sorted(insts.items()):
     if not ok and not show_all: continue
     rows.append((k, b, str(inst.get("port", "?")),
                  status, inst.get("started_at", ""), bool(inst.get("auth_disabled"))))
-if not rows: sys.exit(0)
+if not rows:
+    if want_banner:
+        print("  (no instances)")
+    sys.exit(0)
 w = [max(len(str(r[i])) for r in rows + [("KEY","BACKEND","PORT","STATUS","STARTED","NOAUTH")]) for i in range(6)]
 hdr = ("KEY", "BACKEND", "PORT", "STATUS", "STARTED", "NOAUTH")
-print("  ".join(c.ljust(w[i]) for i,c in enumerate(hdr)))
+print("  " + "  ".join(c.ljust(w[i]) for i,c in enumerate(hdr)))
 for r in rows:
     noauth = "yes" if r[5] else ""
-    print("  ".join((str(c) if i != 5 else noauth).ljust(w[i]) for i,c in enumerate(r)))
+    print("  " + "  ".join((str(c) if i != 5 else noauth).ljust(w[i]) for i,c in enumerate(r)))
 print(f"  (instance count: {len(rows)})")
 PY
 )"
-        if [[ -n "$out" ]]; then
+        # Decide whether to print a `Project: …` header for this iteration.
+        #   * explicit `-d DIR`: always, even when there's nothing to show
+        #     (we still want a confirmation that the project is registered).
+        #   * default list (no -d): only when the heredoc printed body lines
+        #     (so empty projects after a stop don't leave a silent banner).
+        if [[ -n "$data_dir" ]]; then
+            echo "Project: $d"
             any=1
-            echo "$out" | sed 's/^/  /'
+            [[ -n "$out" ]] && echo "$out"
+        elif [[ -n "$out" ]]; then
+            echo "Project: $d"
+            any=1
+            echo "$out"
         fi
         # Prune if asked + clean.
         if [[ "$prune" == "1" ]]; then
@@ -1216,9 +1251,11 @@ PY
     done
 
     if [[ $any -eq 0 ]]; then
-        # Nothing live to surface. Still useful if user passed --all — keep
-        # the (no clawpyter instances ...) header but at the global level.
-        [[ "$all" == "1" ]] && echo "(no instances)"
+        # Walked one or more projects and found zero rows in any of them.
+        # `list --all` reaches here only when every project's instances file
+        # is empty too — surface as a single line so the user sees the walk
+        # happened and the data set is genuinely empty.
+        [[ "$all" == "1" && ${#dirs[@]} -gt 0 ]] && echo "(no instances)"
     fi
     return 0
 }
