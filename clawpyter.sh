@@ -484,10 +484,16 @@ docker_start() {
     fi
 
     # Compose the -e JUPYTER_TOKEN argument.
+    #
+    # The published clawpyter image's CMD is `jupyter lab ...` (not
+    # start-notebook.sh), so it doesn't honour JUPYTER_TOKEN natively.
+    # docker-entrypoint.sh translates JUPYTER_TOKEN into a
+    # `--IdentityProvider.token=…` flag on the jupyter command line so
+    # the env var actually takes effect (empty string = no auth).
     local token_env
     case "$kind" in
         auto) token_env="" ;;                    # jupyter will generate and print
-        none) token_env="-e JUPYTER_TOKEN=" ;;   # empty string = "no token" (matches start-jpy.sh / clawpyter-docker-run.sh)
+        none) token_env="-e JUPYTER_TOKEN=" ;;   # empty string = "no token"
         *)    token_env="-e JUPYTER_TOKEN=$kind" ;;
     esac
 

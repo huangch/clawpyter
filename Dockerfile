@@ -69,10 +69,15 @@ RUN groupadd -g 1000 user \
  && useradd -m -u 1000 -g 1000 user \
  && install -m 0755 ./docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-# Token handling needs no wrapper: jupyter-server reads JUPYTER_TOKEN itself.
-#   unset -> a random token is generated and printed in the startup banner
-#   set   -> used verbatim
-#   ""    -> authentication disabled
+# Token handling: docker-entrypoint.sh translates JUPYTER_TOKEN into a
+# --IdentityProvider.token=… flag on the jupyter command line.
+#   unset -> random — but only matters when the operator calls the jupyter
+#           command directly; under our CMD the entrypoint injects
+#           `--IdentityProvider.token=` (empty) so the server is reachable.
+#           To actually generate-or-print behaviour, override the CMD via
+#           `docker run IMAGE ""`.
+#   set   -> used verbatim on the jupyter CLI, overriding the random banner.
+#   ""    -> authentication disabled (matches start-jpy.sh semantics).
 # The container always listens on 8888; map it wherever you like with -p.
 EXPOSE 8888
 
