@@ -166,12 +166,17 @@ PY
 state_upsert() {
     # Usage: state_upsert <data_dir> <key> <json_blob_for_instance>
     local data_dir="$1" key="$2" blob="$3"
-    local d f; d="$(state_dir "$data_dir")"; f="$d/instances.json"
+    local d f lk; d="$(state_dir "$data_dir")"; f="$d/instances.json"; lk="$d/instances.json.lock"
     mkdir -p "$d"
     # Successful start → remember the data dir globally so `clawpyter.sh
     # list` can find it without a -d. Idempotent.
     global_state_register "$data_dir"
-    python3 - "$f" "$key" "$blob" <<'PY'
+    # Serialize concurrent writers (two `start`s racing on the same data_dir
+    # would otherwise read-modify-write the JSON and silently drop one entry).
+    # `flock` on a sibling lockfile; bash keeps fd 9 open for the subshell.
+    (
+        flock -x 9 || { echo "Error: could not acquire $lk" >&2; return 1; }
+        python3 - "$f" "$key" "$blob" <<'PY'
 import json, os, sys, tempfile
 path, key, blob = sys.argv[1], sys.argv[2], sys.argv[3]
 new_inst = json.loads(blob)
@@ -193,14 +198,18 @@ with tempfile.NamedTemporaryFile("w", dir=dir_, delete=False, prefix=".instances
     tmp_path = tmp.name
 os.replace(tmp_path, path)
 PY
+    ) 9>"$lk"
 }
 
 state_remove() {
     # Usage: state_remove <data_dir> <key>
     local data_dir="$1" key="$2"
-    local f; f="$(state_file "$data_dir")"
+    local f lk; f="$(state_file "$data_dir")"; lk="$f.lock"
     [[ -f "$f" ]] || return 0
-    python3 - "$f" "$key" <<'PY'
+    # Serialize concurrent writers (see state_upsert).
+    (
+        flock -x 9 || { echo "Error: could not acquire $lk" >&2; return 1; }
+        python3 - "$f" "$key" <<'PY'
 import json, os, sys, tempfile
 path, key = sys.argv[1], sys.argv[2]
 try:
@@ -219,6 +228,7 @@ if key in data.get("instances", {}):
         tmp_path = tmp.name
     os.replace(tmp_path, path)
 PY
+    ) 9>"$lk"
 }
 
 # ---------------------------------------------------------------------------
