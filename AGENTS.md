@@ -98,6 +98,42 @@ provides a `run()` helper that wraps handlers under `asyncio.run`). CI is
 local today; add `-m pytest tests/` to the conda-setup `-d` dev workflow if
 you wire CI later.
 
+### Tests (OpenClaw plugin TypeScript suite)
+
+The OpenClaw plugin (`openclaw-plugin/`) ships a parallel TypeScript suite
+run by **vitest** (51 tests as of Sep-2026). It mirrors the python suite:
+- `image-outputs.test.ts` covers `preferredImageMime`, `renderImagePayload`,
+  `formatIopubForAgent`, `outputsToCellOutputs` (image MIME handling).
+- `handlers-cell.test.ts` exercises the cell-level handlers
+  (`insert_cell`, `overwrite_cell_source`, `read_cell`, `clear_cell_output`,
+  `move_cell`, `delete_cell`) with a per-cell-id closure path that mirrors
+  `hermes_plugin/tests/test_handlers_cell.py`.
+- `handlers-server.test.ts` exercises the server-info / kernels /
+  kernelspecs / files handlers via prototype `vi.spyOn` mocking on
+  `JupyterDirectClient` (no network).
+
+Run:
+
+```sh
+cd openclaw-plugin
+ln -sf ../hermes-plugin hermes_plugin   # only if you'll run pytest too
+npm install                              # installs vitest + yjs from package.json
+npx vitest run                           # 51 tests in ~1s
+npx vitest run src/handlers-cell.test.ts # narrow by path
+```
+
+`vitest.config.ts` resolves the bare specifier `openclaw/plugin-sdk/
+plugin-entry` (the OpenClaw host's plugin SDK, not installed here) to a
+test-only stub at `src/test-stub-openclaw-sdk.ts`. The stub returns the
+`definePluginEntry({...})` argument unchanged so handler tests can drive
+`pluginEntry.register(api)` without standing up the host at runtime.
+The stub is excluded from the production `tsc -p tsconfig.json` build
+(via the `test-stub-*.ts` glob in the `exclude` list).
+
+CI is local today; the conda-setup `-d` dev workflow installs vitest
+automatically and exposes the result via `npx vitest run` after
+`./conda-setup.sh clawpyter -d`.
+
 ### Running JupyterLab — use the unified `clawpyter` script
 
 The legacy `start-jpy.sh` / `stop-jpy.sh` / `clawpyter-docker-run.sh` scripts

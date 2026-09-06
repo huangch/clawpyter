@@ -13,10 +13,11 @@
 #                           only (re-)installs packages into the existing env.
 #   -d | --dev              Also install dev tooling (pytest, pytest-cov, ruff,
 #                           pre_commit) AND the OpenClaw plugin toolchain
-#                           (Node.js 25, npm, yjs 13 via `npm install` inside
-#                           openclaw-plugin/), so `tsc -p tsconfig.json`
-#                           typechecks cleanly and `./build4openclaw.sh`
-#                           works end-to-end.
+#                           (Node.js 25, npm, vitest, yjs 13 via `npm install`
+#                           inside openclaw-plugin/), so `tsc -p tsconfig.json`
+#                           typechecks cleanly, `npx vitest run` passes the
+#                           51-test handler/image/render suite, and
+#                           `./build4openclaw.sh` works end-to-end.
 #   -h | --help             Print this help message and exit.
 # <<<USAGE_END>>>
 #
@@ -227,6 +228,10 @@ if [ "${DO_DEV}" -eq 1 ]; then
         bash -c "cd '${SCRIPT_DIR}/openclaw-plugin' && test -x node_modules/.bin/tsc"
     smoke "openclaw-plugin typechecks (dev)" \
         bash -c "cd '${SCRIPT_DIR}/openclaw-plugin' && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json"
+    smoke "openclaw-plugin vitest (dev)" \
+        bash -c "cd '${SCRIPT_DIR}/openclaw-plugin' && test -x node_modules/.bin/vitest"
+    smoke "openclaw-plugin tests run (dev)" \
+        bash -c "cd '${SCRIPT_DIR}/openclaw-plugin' && node node_modules/vitest/vitest.mjs run --reporter=basic"
     smoke "hermes plugin pytest (dev)" \
         bash -c "cd '${SCRIPT_DIR}' && python3 -m pytest --no-header -q"
 fi
