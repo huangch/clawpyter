@@ -42,7 +42,7 @@ Usage:
   $PROG restart  -d DIR -b {native,docker} [-p PORT] [-t TOKEN|--no-token]
   $PROG status   [-d DIR] [-b BACKEND] [--all]
   $PROG logs     -d DIR -b {native,docker} [-f]
-  $PROG list     [--all]
+  $PROG list     [-d DIR] [-b BACKEND] [--all] [--prune]
   $PROG -h | --help
   $PROG --version
 
@@ -166,6 +166,9 @@ state_upsert() {
     local data_dir="$1" key="$2" blob="$3"
     local d f; d="$(state_dir "$data_dir")"; f="$d/instances.json"
     mkdir -p "$d"
+    # Successful start → remember the data dir globally so `clawpyter.sh
+    # list` can find it without a -d. Idempotent.
+    global_state_register "$data_dir"
     python3 - "$f" "$key" "$blob" <<'PY'
 import json, os, sys, tempfile
 path, key, blob = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -216,12 +219,66 @@ if key in data.get("instances", {}):
 PY
 }
 
-state_list_all() {
-    # Usage: state_list_all [--include-stale]
-    # Prints project state files found anywhere under known roots.
-    # For now we only know about per-data-dir; scan the parent dir the user
-    # is asking about. To get a true global list, pass --all + a known root.
-    :
+# ---------------------------------------------------------------------------
+# global data-dir registry
+#
+# We need a way to discover per-project instances.json files without the user
+# having to pass -d every time. The state file lives at
+# `<data_dir>/.clawpyter/instances.json` so we can't scan the host's whole
+# filesystem (would be too noisy). Instead we maintain a thin registry of
+# data_dir paths the user has explicitly started an instance in:
+#
+#     $HOME/.clawpyter/registry/<sha1(abspath)>.txt
+#
+# File presence == 'this data_dir has been started at least once'. The file
+# body is just the absolute path (so a human can `cat` it). Operations are
+# idempotent: registering the same dir twice does nothing; the entry survives
+# across `stop` so `list` still shows stale entries until `--prune` runs.
+# ---------------------------------------------------------------------------
+GLOBAL_REGISTRY_DIR="${HOME}/.clawpyter/registry"
+
+_data_dir_key() {
+    # Stable filename from the absolute path's sha1. sha1 is fine here — this
+    # is not a security boundary, just a uniqueness key.
+    printf '%s' "$1" | python3 -c '
+import hashlib, sys
+print(hashlib.sha1(sys.stdin.read().encode("utf-8")).hexdigest())
+'
+}
+
+global_state_register() {
+    # Usage: global_state_register <data_dir>
+    # Records <data_dir> as a known project. Idempotent.
+    local data_dir="$1"
+    [[ -z "$data_dir" || "$data_dir" == "/" ]] && return 0
+    # Store the abs path so a symlink-renamed workspace resolves consistently.
+    local abs; abs="$(cd "$data_dir" 2>/dev/null && pwd -P || echo "$data_dir")"
+    mkdir -p "$GLOBAL_REGISTRY_DIR"
+    local key; key="$(_data_dir_key "$abs")"
+    local entry="$GLOBAL_REGISTRY_DIR/$key.txt"
+    [[ -f "$entry" ]] && return 0
+    printf '%s\n' "$abs" > "$entry"
+}
+
+global_state_unregister() {
+    # Usage: global_state_unregister <data_dir>
+    local data_dir="$1"
+    [[ -z "$data_dir" ]] && return 0
+    local abs; abs="$(cd "$data_dir" 2>/dev/null && pwd -P || echo "$data_dir")"
+    local key; key="$(_data_dir_key "$abs")"
+    rm -f "$GLOBAL_REGISTRY_DIR/$key.txt" 2>/dev/null || true
+}
+
+global_state_all_data_dirs() {
+    # Print one registered data_dir per line, deduplicated.
+    [[ -d "$GLOBAL_REGISTRY_DIR" ]] || return 0
+    # Sort + uniq so duplicate registrations on different filesystems don't
+    # produce double rows. Missing entries (file deleted between scan and
+    # cat) are filtered out.
+    for f in "$GLOBAL_REGISTRY_DIR"/*.txt; do
+        [[ -f "$f" ]] || continue
+        cat "$f"
+    done | sort -u
 }
 
 # ---------------------------------------------------------------------------
@@ -880,9 +937,13 @@ cmd_status() {
         echo "Project: $data_dir"
         status_for "$data_dir" "$backend" "$all"
     else
-        # Scan under CWD and a few common roots? Simpler: show a hint.
-        echo "No --data-dir given. Pass -d <DIR> (the same one used with start)."
-        echo "Tip: '$PROG list' is not yet implemented; for now look up $PROG status under each project root."
+        # No -d: forward to cmd_list, which walks all registered data_dirs.
+        # --all is already understood by cmd_list; --backend is currently
+        # a no-op there (cmd_list walks every project regardless).
+        local fwd=()
+        [[ "$all" == "1" ]] && fwd+=(--all)
+        [[ -n "$backend" ]] && fwd+=(--backend "$backend")
+        cmd_list "${fwd[@]}"
     fi
 }
 
@@ -903,18 +964,152 @@ cmd_logs() {
 }
 
 cmd_list() {
+    # Walk the global registry of data_dirs and print a one-line summary
+    # per instance. `--data-dir` (or `-d`) restricts the walk to a single
+    # project. `--all` includes stale entries (default hides them so a
+    # `list` invocation reads like `ps`). `--prune` removes this data_dir
+    # from the global registry iff its state file lists zero live
+    # instances (or no state file at all). `--backend {native,docker}`
+    # filters rows by backend.
+    local data_dir=""
+    local backend=""
     local all=0
+    local prune=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            -d|--data-dir) require_arg "$1" "$2"; data_dir="$2"; shift 2 ;;
+            -b|--backend)  require_arg "$1" "$2"; backend="$(parse_backend "$2")"; shift 2 ;;
             --all) all=1; shift ;;
+            --prune) prune=1; shift ;;
             -h|--help) print_usage; exit 0 ;;
             *) echo "Unknown option: $1" >&2; exit 1 ;;
         esac
     done
-    # 'list' without --data-dir walks known clawpyter state files? For now,
-    # we surface a clear message; user passes -d.
-    echo "'$PROG list' requires --data-dir in this version. Use: $PROG status -d <DIR> [--all]"
-    exit 1
+
+    local dirs=()
+    if [[ -n "$data_dir" ]]; then
+        local abs; abs="$(cd "$data_dir" 2>/dev/null && pwd -P || echo "$data_dir")"
+        dirs=("$abs")
+    else
+        while IFS= read -r d; do [[ -n "$d" ]] && dirs+=("$d"); done \
+            < <(global_state_all_data_dirs)
+    fi
+
+    if [[ ${#dirs[@]} -eq 0 ]]; then
+        echo "(no clawpyter instances registered — start one with '$PROG start -d DIR -b BACKEND')"
+        return 0
+    fi
+
+    local any=0
+    for d in "${dirs[@]}"; do
+        # We could just call status_for here, but it doesn't tell us whether
+        # to surface the data_dir — print as a banner per project for the
+        # no-`--data-dir` case.
+        if [[ -z "$data_dir" ]]; then
+            echo "Project: $d"
+        fi
+        # Show-all on `status_for` is the third arg (default 1 = show
+        # stale). Map --all to show_all=1; otherwise hide stale so the list
+        # reads like ps.
+        local show_all=0
+        [[ "$all" == "1" ]] && show_all=1
+        # Inline a slim variant of status_for so we can render even when
+        # the file is missing/empty rather than printing "(no instances)"
+        # for every clean project.
+        local f; f="$(state_file "$d")"
+        if [[ ! -f "$f" ]]; then
+            [[ -z "$data_dir" ]] || echo "  (no instances)"
+            [[ -n "$data_dir" && "$prune" == "1" ]] && global_state_unregister "$d"
+            continue
+        fi
+        local out
+        out="$(python3 - "$f" "$show_all" "$backend" <<'PY'
+import json, os, subprocess, sys
+path, show_all, backend_filter = sys.argv[1], sys.argv[2] == "1", sys.argv[3]
+try:
+    with open(path) as fh:
+        data = json.load(fh)
+except (OSError, ValueError):
+    print(f'  (state invalid: {path})')
+    sys.exit(0)
+insts = data.get("instances", {})
+def alive(inst):
+    b = inst.get("backend")
+    if b == "native":
+        pid = inst.get("pid")
+        if not pid: return False, "no-pid"
+        try: os.kill(pid, 0); return True, f"pid={pid}"
+        except (OSError, ProcessLookupError): return False, "stale"
+    if b == "docker":
+        cid = inst.get("container")
+        if not cid: return False, "no-cid"
+        out = subprocess.run(["docker", "ps", "-q", "--filter", f"id={cid}"],
+                             capture_output=True, text=True)
+        if out.stdout.strip(): return True, f"cid={cid[:12]}"
+        return False, "stale"
+    return False, "unknown"
+rows = []
+for k, inst in sorted(insts.items()):
+    b = inst.get("backend", "?")
+    if backend_filter and b != backend_filter: continue
+    ok, status = alive(inst)
+    if not ok and not show_all: continue
+    rows.append((k, b, str(inst.get("port", "?")),
+                 status, inst.get("started_at", ""), bool(inst.get("auth_disabled"))))
+if not rows: sys.exit(0)
+w = [max(len(str(r[i])) for r in rows + [("KEY","BACKEND","PORT","STATUS","STARTED","NOAUTH")]) for i in range(6)]
+hdr = ("KEY", "BACKEND", "PORT", "STATUS", "STARTED", "NOAUTH")
+print("  ".join(c.ljust(w[i]) for i,c in enumerate(hdr)))
+for r in rows:
+    noauth = "yes" if r[5] else ""
+    print("  ".join((str(c) if i != 5 else noauth).ljust(w[i]) for i,c in enumerate(r)))
+print(f"  (instance count: {len(rows)})")
+PY
+)"
+        if [[ -n "$out" ]]; then
+            any=1
+            echo "$out" | sed 's/^/  /'
+        fi
+        # Prune if asked + clean.
+        if [[ "$prune" == "1" ]]; then
+            local remaining
+            remaining="$(python3 - "$f" <<'PY'
+import json, os, subprocess, sys
+path = sys.argv[1]
+try:
+    with open(path) as fh:
+        data = json.load(fh)
+except (OSError, ValueError):
+    print(0); sys.exit(0)
+insts = data.get("instances", {})
+alive_count = 0
+for inst in insts.values():
+    b = inst.get("backend")
+    if b == "native":
+        pid = inst.get("pid")
+        try:
+            if pid: os.kill(int(pid), 0); alive_count += 1
+        except (OSError, ProcessLookupError, ValueError, TypeError):
+            pass
+    elif b == "docker":
+        cid = inst.get("container")
+        out = subprocess.run(["docker", "ps", "-q", "--filter", f"id={cid}"],
+                             capture_output=True, text=True) if cid \
+            else subprocess.CompletedProcess(args=[], returncode=1, stdout="")
+        if out.stdout.strip(): alive_count += 1
+print(alive_count)
+PY
+)"
+            [[ "$remaining" == "0" ]] && global_state_unregister "$d"
+        fi
+    done
+
+    if [[ $any -eq 0 ]]; then
+        # Nothing live to surface. Still useful if user passed --all — keep
+        # the (no clawpyter instances ...) header but at the global level.
+        [[ "$all" == "1" ]] && echo "(no instances)"
+    fi
+    return 0
 }
 
 # ---------------------------------------------------------------------------
