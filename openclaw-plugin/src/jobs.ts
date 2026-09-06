@@ -16,6 +16,10 @@ export interface OutputChunk {
   stream: "stdout" | "stderr" | "result" | "display" | "error";
   text: string;
   mime?: string;
+  /** Inline image payload mirroring the agent-side `[IMAGE: …]` block.
+   *  Stored on the chunk so a fire-and-forget job can be re-rendered after
+   *  completion. */
+  image?: { mime: string; base64: string };
   execution_count?: number | null;
 }
 
@@ -102,12 +106,24 @@ export function summarise(job: JobState): string {
   return lines.join("\n");
 }
 
-/** Format accumulated outputs as plain text (one chunk per line). */
+/** Format accumulated outputs as plain text (one chunk per line).
+ *
+ * Image payloads attached to a chunk (`o.image`) are surfaced as inline
+ * `data:` URI markdown blocks so any markdown-capable consumer of the
+ * tool-result renders the pixel content without an extra round-trip.
+ */
 export function formatJobOutputs(job: JobState): string {
   return job.outputs
     .map((o) => {
       const tag = o.stream === "stderr" ? "STDERR" : o.stream.toUpperCase();
-      return `[${tag}] ${o.text}`;
+      const lines: string[] = [];
+      if (o.text) lines.push(`[${tag}] ${o.text}`);
+      if (o.image) {
+        lines.push(
+          `[IMAGE: ${o.image.mime}]\n![output](data:${o.image.mime};base64,${o.image.base64})\n[/IMAGE]`,
+        );
+      }
+      return lines.join("\n");
     })
     .join("\n");
 }

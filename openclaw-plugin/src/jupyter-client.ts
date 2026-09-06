@@ -2,6 +2,10 @@
 // Communicates with Jupyter's REST API and WebSocket kernel channels.
 
 import { getJob, finalize, type JobState } from "./jobs.js";
+import {
+  formatIopubForAgent,
+  outputsToCellOutputs,
+} from "./image-outputs.js";
 
 /**
  * Returns the WebSocket constructor for the current runtime. Prefers Node
@@ -622,16 +626,47 @@ export class JupyterDirectClient {
             if (text) cur.outputs.push({ stream: name === "stderr" ? "stderr" : "stdout", text });
           } else if (msgType === "execute_result" || msgType === "display_data") {
             const data = (content.data ?? {}) as Record<string, unknown>;
-            const text =
+            const textPl =
               typeof data["text/plain"] === "string"
                 ? data["text/plain"]
-                : JSON.stringify(data);
-            cur.outputs.push({
-              stream: msgType === "execute_result" ? "result" : "display",
-              text,
-              mime: msgType === "execute_result" ? "text/plain" : undefined,
-              execution_count: (content.execution_count as number | null | undefined) ?? null,
-            });
+                : "";
+            const baseStream = msgType === "execute_result" ? "result" : "display";
+            if (textPl) {
+              cur.outputs.push({
+                stream: baseStream,
+                text: textPl,
+                mime: "text/plain",
+                execution_count: (content.execution_count as number | null | undefined) ?? null,
+              });
+            }
+            const imgMime =
+              typeof data["image/png"] === "string"
+                ? "image/png"
+                : typeof data["image/jpeg"] === "string"
+                  ? "image/jpeg"
+                  : typeof data["image/svg+xml"] === "string"
+                    ? "image/svg+xml"
+                    : null;
+            if (imgMime) {
+              const payload = String(data[imgMime] ?? "");
+              cur.outputs.push({
+                stream: baseStream,
+                text: `[IMAGE: ${imgMime}](${payload.length} bytes; see \`image\` field)`,
+                mime: imgMime,
+                image: { mime: imgMime, base64: payload },
+                execution_count: (content.execution_count as number | null | undefined) ?? null,
+              });
+            }
+            // If we had no text and no image, fall back to the full data
+            // dump so the user can still see *something* in the chunk.
+            if (!textPl && !imgMime) {
+              cur.outputs.push({
+                stream: baseStream,
+                text: JSON.stringify(data),
+                mime: "text/plain",
+                execution_count: (content.execution_count as number | null | undefined) ?? null,
+              });
+            }
           } else if (msgType === "error") {
             const ename = String(content.ename ?? "Error");
             const evalue = String(content.evalue ?? "");
@@ -745,20 +780,24 @@ export class JupyterDirectClient {
         const content = (msg.content ?? {}) as Record<string, unknown>;
 
         if (channel === "iopub") {
-          if (msgType === "stream") {
-            const text = String(content.text ?? "");
-            if (text) outputs.push(text);
-          } else if (msgType === "execute_result" || msgType === "display_data") {
-            const data = (content.data ?? {}) as Record<string, unknown>;
-            const text =
-              typeof data["text/plain"] === "string"
-                ? data["text/plain"]
-                : JSON.stringify(data);
-            if (text) outputs.push(text);
-          } else if (msgType === "error") {
-            const ename = String(content.ename ?? "Error");
-            const evalue = String(content.evalue ?? "");
-            outputs.push(`[ERROR: ${ename}: ${evalue}]`);
+          const innerType = msgType as
+            | "stream"
+            | "execute_result"
+            | "display_data"
+            | "error"
+            | string;
+          if (
+            innerType === "stream" ||
+            innerType === "execute_result" ||
+            innerType === "display_data" ||
+            innerType === "error"
+          ) {
+            for (const chunk of formatIopubForAgent(
+              innerType,
+              content as Record<string, unknown>,
+            )) {
+              if (chunk) outputs.push(chunk);
+            }
           }
         } else if (channel === "shell" && msgType === "execute_reply") {
           done = true;

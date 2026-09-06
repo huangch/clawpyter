@@ -383,7 +383,13 @@ JUPYTER_EXECUTE_CELL = {
         "Synchronous by default; pass run_async=true to fire-and-forget (returns a "
         "job_id; outputs are written back to the cell when the kernel completes). "
         "timeout controls the maximum wait in seconds (default: 90). "
-        "Returns text, display, and error outputs."
+        "Returns text, display, and error outputs. Image MIME payloads "
+        "(image/png, image/jpeg, image/gif, image/svg+xml) are surfaced as "
+        "inline `data:` URI blocks you can paste into a downstream renderer; "
+        "the cell itself is also updated with the same image so JupyterLab "
+        "renders it. The async path strips image payloads — re-read the cell "
+        "with `jupyter_read_cell(..., include_outputs=True)` to get the full "
+        "rendering once the job completes."
     ),
     "parameters": {
         "type": "object",
@@ -435,7 +441,10 @@ JUPYTER_INSERT_EXECUTE_CODE_CELL = {
     "description": (
         "Insert a new code cell at a position in the currently activated notebook and immediately "
         "execute it. This is the preferred shortcut when you want to add and run code in one step. "
-        "cell_index is 0-based; use -1 to append at end. Returns insertion confirmation and outputs."
+        "cell_index is 0-based; use -1 to append at end. Returns insertion confirmation and outputs; "
+        "image MIME payloads (image/png, image/jpeg, image/gif, image/svg+xml) are surfaced "
+        "as inline `data:` URI blocks you can paste into a downstream renderer, and the "
+        "cell itself is updated with the same image so JupyterLab renders it."
     ),
     "parameters": {
         "type": "object",
@@ -566,7 +575,9 @@ JUPYTER_EXECUTE_CODE = {
         "immediately with a job_id, and you poll with jupyter_get_job_result. "
         "Use synchronous for short snippets; use async for anything that may take "
         "longer than a minute (training loops, large downloads, deep sleeps). "
-        "Pass `kernel_id` to target a raw (no-notebook) kernel."
+        "Pass `kernel_id` to target a raw (no-notebook) kernel. "
+        "On the synchronous path, image MIME payloads (image/png, image/jpeg, "
+        "image/gif, image/svg+xml) are surfaced as inline `data:` URI blocks."
     ),
     "parameters": {
         "type": "object",

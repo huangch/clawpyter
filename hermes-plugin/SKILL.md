@@ -527,6 +527,13 @@ Arguments:
 
 Returns: all outputs produced by the cell (text, HTML, images).
 
+Image MIME payloads (`image/png`, `image/jpeg`, `image/gif`, `image/svg+xml`)
+are surfaced as inline `data:` URI markdown blocks the host UI can render
+directly, and the cell itself stores the same image so JupyterLab re-renders
+it on next load. A 256 KB inline budget applies; payloads above the budget
+return a `[IMAGE: <mime> truncated]` marker instead of dropping silently —
+save oversized figures to disk and reference them by path.
+
 Note: if the cell is a markdown cell (not a code cell), this tool returns an error.
 
 ---
@@ -541,6 +548,11 @@ Arguments:
 - `timeout` (optional, default `90`): maximum seconds to wait for the code to finish.
 
 Returns: a message confirming the insertion, followed by all execution outputs.
+
+Image MIME payloads (`image/png`, `image/jpeg`, `image/gif`, `image/svg+xml`)
+are surfaced as inline `data:` URI markdown blocks the host UI can render
+directly, and the inserted cell stores the same image so JupyterLab
+re-renders it on next load.
 
 ---
 
@@ -588,6 +600,12 @@ Arguments:
 - `timeout` (optional, default `30`, maximum `60`): maximum seconds to wait. Cannot exceed 60 seconds.
 
 Returns: all execution outputs.
+
+Image MIME payloads (`image/png`, `image/jpeg`, `image/gif`, `image/svg+xml`)
+are surfaced as inline `data:` URI markdown blocks the host UI can render
+directly. (Unlike `jupyter_execute_cell`, this tool does not write back into
+the cell — it runs in the kernel only.) A 256 KB inline budget applies;
+payloads above the budget return a `[IMAGE: <mime> truncated]` marker.
 
 ---
 

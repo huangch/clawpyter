@@ -170,6 +170,204 @@ def _diff_source(old: str, new: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Image-aware output formatting
+# ---------------------------------------------------------------------------
+#
+# Jupyter kernels commonly emit `display_data` / `execute_result` payloads
+# that contain an image (PNG / JPEG / SVG / GIF) alongside or instead of
+# `text/plain`. Without an image-aware path, the rendered cell looks empty
+# for the agent and the image is silently dropped from the handler's text
+# response. We surface image payloads as a fenced data-URI block so any
+# markdown-capable consumer (the agent runtime, the dashboard, log printers,
+# …) renders the pixel content inline.
+#
+# The agent runtime in particular uses this to render `display(matplotlib
+# figure)` outputs without round-tripping back through the Jupyter server.
+
+# MIME types we promote to inline image output. SVGs embed as a `<svg>…</svg>`
+# block; the rest become base64-encoded data URIs.
+_IMAGE_MIMES_BASE64 = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/gif": "gif",
+}
+_IMAGE_MIMES_TEXT = {
+    "image/svg+xml",
+}
+
+# Total byte budget for inline image payloads across a single handler call
+# (rough: 256 KB matches a typical chart panel). Beyond this we'd produce a
+# multi-megabyte tool-result string which thrashes the model's context. We
+# surface a `[truncated]` marker instead of dropping the image silently.
+_MAX_IMAGE_BYTES = 256 * 1024
+
+
+def _preferred_image_mime(data: dict) -> str | None:
+    """Pick the most-valuable image MIME in a display_data/execute_result
+    payload, in this order: SVG (vector), PNG, JPEG, GIF. Returns None when the
+    payload has no image data we can render.
+    """
+    if not isinstance(data, dict):
+        return None
+    for m in ("image/svg+xml", "image/png", "image/jpeg",
+              "image/jpg", "image/gif"):
+        v = data.get(m)
+        if isinstance(v, str) and v:
+            return m
+    return None
+
+
+def _render_image_payload(data: dict, mime: str) -> str:
+    """Render one image MIME payload as an inline data-URI markdown block.
+
+    The base64 forms encode the bytes and embed them in an `![](data:…)`
+    line; SVG embeds directly with the `data:image/svg+xml;utf8,…` URL form
+    so vector text stays sharp at zoom. The leading `[IMAGE: …]` prefix
+    preserves the original MIME so downstream consumers can match on the
+    prefix without parsing the data URI.
+    """
+    payload = str(data[mime])
+    if mime in _IMAGE_MIMES_BASE64:
+        # Already base64 (Jupyter servers always emit b64 for binary MIME).
+        b64 = payload
+        ext = _IMAGE_MIMES_BASE64[mime]
+        if len(b64) > _MAX_IMAGE_BYTES:
+            return (
+                f"[IMAGE: {mime} truncated] "
+                f"({len(b64)} bytes base64 exceeds the "
+                f"{_MAX_IMAGE_BYTES // 1024} KB inline budget; rerun the cell "
+                "with a smaller figure or save the figure to disk and "
+                "reference it by path.)"
+            )
+        return f"[IMAGE: {mime}]\n![output](data:{mime};base64,{b64})\n[/IMAGE]"
+    if mime in _IMAGE_MIMES_TEXT:
+        if len(payload.encode("utf-8")) > _MAX_IMAGE_BYTES:
+            return (
+                f"[IMAGE: {mime} truncated] "
+                f"({len(payload)} bytes utf-8 exceeds the "
+                f"{_MAX_IMAGE_BYTES // 1024} KB inline budget.)"
+            )
+        return (
+            f"[IMAGE: {mime}]\n"
+            f"![output](data:image/svg+xml;utf8,{payload})\n"
+            f"[/IMAGE]"
+        )
+    return f"[IMAGE: {mime} ignored]"
+
+
+def _format_iopub_for_agent(msg_type: str, content: dict) -> list[str]:
+    """Convert one iopub message into a list of string chunks for the agent.
+
+    Behaviour:
+      - `stream` and `error` messages produce a single text chunk (text +
+        stderr/stdout tag).
+      - `execute_result` / `display_data` with an image MIME emit a separate
+        `[IMAGE: …]…[/IMAGE]` block so the image survives transport.
+      - `text/plain` is always emitted, even when an image is also present;
+        matplotlib figures produce both, and dropping the text hides axis
+        titles and warnings the user would otherwise see.
+    """
+    if msg_type == "stream":
+        text = content.get("text", "") or ""
+        name = (content.get("name") or "stdout").lower()
+        if not text:
+            return []
+        return [f"[{name.upper()}]\n{text}\n[/{name.strip().upper()}]"]
+    if msg_type == "error":
+        ename = content.get("ename", "Error")
+        evalue = content.get("evalue", "")
+        return [f"[ERROR: {ename}: {evalue}]"]
+    if msg_type in ("execute_result", "display_data"):
+        chunks: list[str] = []
+        data = content.get("data", {}) or {}
+        mime = _preferred_image_mime(data)
+        if mime is not None:
+            chunks.append(_render_image_payload(data, mime))
+        text = data.get("text/plain") if isinstance(data, dict) else None
+        # When text/plain is absent (image-only display), fall back to a short
+        # `text/html` rendering so the user still sees something human-readable.
+        if not text and isinstance(data, dict) and data.get("text/html"):
+            text = str(data["text/html"]).splitlines()[0][:200] if data["text/html"] else None
+        if text:
+            tag = "RESULT" if msg_type == "execute_result" else "DISPLAY"
+            chunks.append(f"[{tag}]\n{text}\n[/{tag}]")
+        return chunks
+    return []
+
+
+def _outputs_to_cell_outputs(outputs: list[str]) -> list[dict]:
+    """Translate the agent-facing chunks produced by `_execute_code_ws` back
+    into a JupyterLab cell-output list (`outputs` field of a code cell).
+
+    Image chunks become `display_data` entries the Notebook server can render;
+    plain `[STDOUT]`/`[STDERR]` blocks become `stream` entries; everything
+    else falls back to a stream-stdout entry so the cell content mirrors the
+    agent's text transcript.
+
+    For image entries, JupyterLab expects the payload stored in
+    `outputs[i].data["image/<mime>"]` to be the **bare base64** string
+    (binary MIME) or the raw vector markup (SVG); our agent-side block
+    embeds the payload inside a markdown data URL, so we extract the part
+    after `;base64,` / `;utf8,` here.
+    """
+    cells: list[dict] = []
+    image_re = re.compile(
+        r"^\[IMAGE:\s*(?P<mime>image/[a-z+]+)\]\s*(?P<body>.*?)\[/IMAGE\]\s*$",
+        re.DOTALL,
+    )
+    data_url_re = re.compile(
+        r"data:(?P<mime>[a-z/+\-]+)(?:;(?P<enc>base64|utf8))?,(?P<value>.*)",
+        re.DOTALL,
+    )
+    for chunk in outputs:
+        if not chunk:
+            continue
+        m = image_re.match(str(chunk))
+        if m:
+            mime = m.group("mime").strip()
+            body = (m.group("body") or "").strip()
+            data_value: str
+            if body.startswith("![") and body.endswith(")"):
+                # markdown image form: ![output](data:<mime>;base64,<value>)
+                inner = body[body.find("(") + 1 : -1].strip()
+                dm = data_url_re.match(inner)
+                if dm is not None:
+                    data_value = dm.group("value")
+                else:
+                    data_value = inner
+            else:
+                data_value = body
+            cells.append({
+                "output_type": "display_data",
+                "data": {mime: data_value},
+                "metadata": {},
+            })
+            continue
+        if chunk.startswith("[STDOUT]"):
+            inner = chunk[len("[STDOUT]"):].split("\n[/STDOUT]")[0].strip("\n")
+            cells.append({"output_type": "stream", "name": "stdout", "text": inner})
+            continue
+        if chunk.startswith("[STDERR]"):
+            inner = chunk[len("[STDERR]"):].split("\n[/STDERR]")[0].strip("\n")
+            cells.append({"output_type": "stream", "name": "stderr", "text": inner})
+            continue
+        if chunk.startswith("[RESULT]") or chunk.startswith("[DISPLAY]"):
+            tag_end = chunk.find("]\n") + len("]\n")
+            end = chunk.find("\n[/")
+            inner = chunk[tag_end:end if end > 0 else len(chunk)].strip("\n")
+            cells.append({
+                "output_type": "display_data",
+                "data": {"text/plain": inner},
+                "metadata": {},
+            })
+            continue
+        # Fallback: unknown chunk goes in as a stdout stream line.
+        cells.append({"output_type": "stream", "name": "stdout", "text": str(chunk)})
+    return cells
+
+
+# ---------------------------------------------------------------------------
 # WebSocket kernel execution
 # ---------------------------------------------------------------------------
 
@@ -225,19 +423,9 @@ async def _execute_code_ws(kernel_id: str, code: str, timeout_s: float) -> list:
             content = msg.get("content", {})
 
             if channel == "iopub":
-                if msg_type == "stream":
-                    text = content.get("text", "")
-                    if text:
-                        outputs.append(text)
-                elif msg_type in ("execute_result", "display_data"):
-                    data = content.get("data", {})
-                    text = data.get("text/plain") or json.dumps(data)
-                    if text:
-                        outputs.append(str(text))
-                elif msg_type == "error":
-                    ename = content.get("ename", "Error")
-                    evalue = content.get("evalue", "")
-                    outputs.append(f"[ERROR: {ename}: {evalue}]")
+                for chunk in _format_iopub_for_agent(msg_type, content):
+                    if chunk:
+                        outputs.append(chunk)
             elif channel == "shell" and msg_type == "execute_reply":
                 done_event.set()
                 return
@@ -980,9 +1168,7 @@ async def jupyter_execute_cell(args: dict, **kwargs) -> str:
 
     timeout_s = float(args.get("timeout", 90))
     outputs = await _execute_code_ws(sess["kernel_id"], source, timeout_s)
-    nb_outputs = [
-        {"output_type": "stream", "name": "stdout", "text": t} for t in outputs
-    ]
+    nb_outputs = _outputs_to_cell_outputs(outputs)
 
     if room is not None:
         max_count = 0

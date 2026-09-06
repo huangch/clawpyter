@@ -101,7 +101,15 @@ def summarise(job: JobState) -> str:
 
 
 def format_outputs(job: JobState) -> str:
-    """Return the accumulated outputs as plain text."""
+    """Return the accumulated outputs as plain text.
+
+    Image payloads are not preserved on the JobState; they're decoded inline
+    by tools._format_iopub_for_agent on the synchronous path. The async
+    fire-and-forget path keeps the plain text only — for full image
+    rendering of a fire-and-forget cell, re-read it via
+    ``jupyter_read_cell(cell_id=…, include_outputs=True)`` once the job
+    completes.
+    """
     out: list[str] = []
     for o in job.outputs:
         tag = o.get("stream", "STDOUT").upper()

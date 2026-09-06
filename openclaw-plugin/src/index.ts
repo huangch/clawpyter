@@ -12,6 +12,7 @@ import {
   formatJobOutputs,
   type JobState,
 } from "./jobs.js";
+import { outputsToCellOutputs } from "./image-outputs.js";
 import {
   definePluginEntry,
   type OpenClawPluginApi,
@@ -1106,7 +1107,9 @@ export default definePluginEntry({
     {
       name: "jupyter_execute_cell",
       description:
-        "Execute a cell from the currently activated notebook. Synchronous by default — returns outputs when the cell finishes. Pass run_async=true to fire-and-forget: returns immediately with a job_id and you poll with jupyter_get_job_result. The synchronous path always writes outputs back into the cell; the async path writes outputs back when the kernel returns execute_reply. Specify the cell by `cell_index` (0-based) OR `cell_id` (preferred).",
+        "Execute a cell from the currently activated notebook. Synchronous by default — returns outputs when the cell finishes. Pass run_async=true to fire-and-forget: returns immediately with a job_id and you poll with jupyter_get_job_result. The synchronous path always writes outputs back into the cell; the async path writes outputs back when the kernel returns execute_reply. Specify the cell by `cell_index` (0-based) OR `cell_id` (preferred). " +
+        "On the synchronous path, image MIME payloads (image/png, image/jpeg, image/gif, image/svg+xml) are surfaced as inline `data:` URI blocks you can paste " +
+        "into a downstream renderer, and the cell itself is updated with the same image so JupyterLab renders it.",
       parameters: Type.Object({
         notebook_name: Type.Optional(Type.String()),
         cell_index: Type.Optional(Type.Integer({ minimum: 0 })),
@@ -1205,11 +1208,7 @@ export default definePluginEntry({
         const timeoutMs = (typeof params.timeout === "number" ? params.timeout : 90) * 1000;
         const outputs = await client.executeCode(sess.kernelId, sourceForExec, timeoutMs);
 
-        const cellOutputs = outputs.map((text) => ({
-          output_type: "stream",
-          name: "stdout",
-          text,
-        }));
+        const cellOutputs = outputsToCellOutputs(outputs);
         await mutateNotebook(sess.path, (cells) => {
           const target = cells[resolvedIndex];
           if (!target) return "continue";
@@ -1232,7 +1231,8 @@ export default definePluginEntry({
     {
       name: "jupyter_insert_execute_code_cell",
       description:
-        "Insert a cell at specified index from the currently activated notebook and then execute it. This is the preferred shortcut when you want to insert a cell and execute it at the same time. Requires cell_index (0-based, -1 to append) and cell_source (code). Optional timeout (default: 90 seconds) controls execution wait. Returns both insertion confirmation and execution results including outputs.",
+        "Insert a cell at specified index from the currently activated notebook and then execute it. This is the preferred shortcut when you want to insert a cell and execute it at the same time. Requires cell_index (0-based, -1 to append) and cell_source (code). Optional timeout (default: 90 seconds) controls execution wait. Returns both insertion confirmation and execution results including outputs. " +
+        "Image MIME payloads (image/png, image/jpeg, image/gif, image/svg+xml) are surfaced as inline `data:` URI blocks.",
       parameters: Type.Object({
         notebook_name: Type.Optional(Type.String()),
         cell_index: Type.Integer({ minimum: -1 }),
@@ -1287,11 +1287,7 @@ export default definePluginEntry({
         const timeoutMs = (typeof params.timeout === "number" ? params.timeout : 90) * 1000;
         const outputs = await client.executeCode(sess.kernelId, cellSource, timeoutMs);
 
-        const cellOutputs = outputs.map((text) => ({
-          output_type: "stream",
-          name: "stdout",
-          text,
-        }));
+        const cellOutputs = outputsToCellOutputs(outputs);
         await mutateNotebook(sess.path, (cells) => {
           const idx = Math.min(actualIndex, cells.length - 1);
           const target = cells[idx];
@@ -1493,7 +1489,8 @@ export default definePluginEntry({
     {
       name: "jupyter_execute_code",
       description:
-        "Execute code directly in the kernel (not saved to notebook). Without kernel_id it uses the current activated notebook's kernel; with kernel_id it bypasses the notebook and runs on a raw kernel (useful when you only want a scratchpad kernel for shell commands, %pip installs, etc., without polluting state). Supports magic commands with % and shell commands with !. Synchronous by default — returns outputs when the cell finishes. Pass run_async=true to fire-and-forget; the call returns immediately with a job_id, and you poll with jupyter_get_job_result / jupyter_list_jobs / jupyter_cancel_job. Do NOT use for code whose assignments need to persist unless run_async=false AND you read the result.",
+        "Execute code directly in the kernel (not saved to notebook). Without kernel_id it uses the current activated notebook's kernel; with kernel_id it bypasses the notebook and runs on a raw kernel (useful when you only want a scratchpad kernel for shell commands, %pip installs, etc., without polluting state). Supports magic commands with % and shell commands with !. Synchronous by default — returns outputs when the cell finishes. Pass run_async=true to fire-and-forget; the call returns immediately with a job_id, and you poll with jupyter_get_job_result / jupyter_list_jobs / jupyter_cancel_job. Do NOT use for code whose assignments need to persist unless run_async=false AND you read the result. " +
+        "On the synchronous path, image MIME payloads (image/png, image/jpeg, image/gif, image/svg+xml) are surfaced as inline `data:` URI blocks.",
       parameters: Type.Object({
         notebook_name: Type.Optional(Type.String()),
         code: Type.String(),
