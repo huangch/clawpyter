@@ -19,8 +19,9 @@ const _IMAGE_MIMES_TEXT: ReadonlyArray<string> = ["image/svg+xml"];
 
 // Inline image payload budget: 256 KB matches a typical chart figure. Larger
 // payloads are surfaced with a `[truncated]` marker instead of bloating the
-// tool-result string.
-const MAX_IMAGE_BYTES = 256 * 1024;
+// tool-result string. Exported so tests can drive the truncation path without
+// crafting megabytes of base64 in unit-test fixtures.
+export const MAX_IMAGE_BYTES = 256 * 1024;
 
 export type IopubMsgType = "stream" | "execute_result" | "display_data" | "error";
 

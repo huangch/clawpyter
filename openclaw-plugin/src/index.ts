@@ -1739,6 +1739,17 @@ export default definePluginEntry({
         } catch (e) {
           return JupyterDirectClient.asToolText("Clear cell output", `[ERROR] ${String(e)}`);
         }
+        // Mirror the Hermes handler: clear_cell_output only makes sense for
+        // code cells (markdown/raw cells don't have outputs/execution_count
+        // to clear), and silently rewriting those fields on a markdown cell
+        // is misleading. Reject the request with a clear message — same as
+        // jupyter_execute_cell / jupyter_execute_code do.
+        if (preview.cells[resolvedIndex].cell_type !== "code") {
+          return JupyterDirectClient.asToolText(
+            "Clear cell output",
+            `Cell ${resolvedIndex} is not a code cell (type: ${preview.cells[resolvedIndex].cell_type}).`,
+          );
+        }
 
         await mutateNotebook(sess.path, (cells) => {
           const target = cells[resolvedIndex];
