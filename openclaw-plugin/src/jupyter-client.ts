@@ -85,6 +85,8 @@ type KernelSpec = {
     display_name: string;
     language: string;
     env?: Record<string, string>;
+    argv?: string[];
+    codemirror_mode?: string | Record<string, unknown>;
   };
 };
 
@@ -414,7 +416,11 @@ export class JupyterDirectClient {
           name,
           spec.display_name ?? "unknown",
           spec.language ?? "unknown",
-          spec.codemirror_mode ?? "auto",
+          spec.codemirror_mode == null
+            ? "auto"
+            : typeof spec.codemirror_mode === "string"
+              ? spec.codemirror_mode
+              : "object",
           envStr,
           argv,
           "true",
@@ -704,12 +710,6 @@ export class JupyterDirectClient {
 
     return { jobId: opts.jobId, startedAt };
   }
-
-  /**
-   * Execute code on a kernel via the Jupyter WebSocket channel protocol.
-   * Returns an array of output strings.
-   */
-  async executeCode(kernelId: string, code: string, timeoutMs?: number): Promise<string[]> {
 
   /**
    * Execute code on a kernel via the Jupyter WebSocket channel protocol.

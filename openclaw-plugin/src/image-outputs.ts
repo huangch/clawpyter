@@ -136,11 +136,27 @@ export interface NbCellOutput {
   execution_count?: number | null;
 }
 
-const IMAGE_BLOCK = /^\[IMAGE:\s*(?<mime>image\/[a-z+]+)\]\s*\n?(?<body>.*?)\n?\[/IMAGE\]\s*$/s;
-const STDOUT_BLOCK = /^\[STDOUT\]\n?(?<body>[\s\S]*?)\n?\[\/STDOUT\]\s*$/;
-const STDERR_BLOCK = /^\[STDERR\]\n?(?<body>[\s\S]*?)\n?\[\/STDERR\]\s*$/;
-const TEXT_BLOCK = /^\[(?<tag>RESULT|DISPLAY)\]\n?(?<body>[\s\S]*?)\n?\[\/(?<tag2>RESULT|DISPLAY)\]\s*$/;
-const DATA_URL = /^data:(?<mime>[a-z/+\-]+)(?:;(?<enc>base64|utf8))?,(?<value>.*)$/s;
+// Regex constants are constructed via `new RegExp` rather than regex
+// literals: TypeScript's lexer flags `\[/…]` patterns inside a literal as
+// "invalid character" even though the same pattern parses fine via the
+// constructor. The runtime semantics are identical.
+const IMAGE_BLOCK = new RegExp(
+  '^\\[IMAGE:\\s*(?<mime>image\\/[a-z+]+)\\]\\s*\\n?(?<body>.*?)\\n?\\[/IMAGE\\]\\s*$',
+  's',
+);
+const STDOUT_BLOCK = new RegExp(
+  '^\\[STDOUT\\]\\n?(?<body>[\\s\\S]*?)\\n?\\[\/STDOUT\\]\\s*$',
+);
+const STDERR_BLOCK = new RegExp(
+  '^\\[STDERR\\]\\n?(?<body>[\\s\\S]*?)\\n?\\[\/STDERR\\]\\s*$',
+);
+const TEXT_BLOCK = new RegExp(
+  '^\\[(?<tag>RESULT|DISPLAY)\\]\\n?(?<body>[\\s\\S]*?)\\n?\\[\/(?<tag2>RESULT|DISPLAY)\\]\\s*$',
+);
+const DATA_URL = new RegExp(
+  '^data:(?<mime>[a-z/+\\-]+)(?:;(?<enc>base64|utf8))?,(?<value>.*)$',
+  's',
+);
 
 export function outputsToCellOutputs(outputs: string[]): NbCellOutput[] {
   const cells: NbCellOutput[] = [];
