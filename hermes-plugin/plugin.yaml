@@ -2,6 +2,16 @@ name: clawpyter
 version: 1.0.0
 description: Jupyter notebook integration — create, edit, and execute notebooks from Hermes Agent
 author: ClawPyter contributors
+manifest_version: 1
+python_dependencies:
+  - httpx
+  - websockets
+requires_env:
+  - name: JUPYTER_URL
+    description: "URL of the Jupyter Lab server (default: http://127.0.0.1:8888)"
+  - name: JUPYTER_TOKEN
+    description: "Jupyter auth token (default: empty, fine for local servers)"
+    secret: true
 provides_tools:
   - jupyter_server_info
   - jupyter_connect_to_jupyter
@@ -23,3 +33,19 @@ provides_tools:
   - jupyter_read_cell
   - jupyter_delete_cell
   - jupyter_execute_code
+  - jupyter_edit_cell_source
+  - jupyter_clear_cell_outputs
+  - jupyter_clear_cell_output
+  - jupyter_move_cell
+  - jupyter_interrupt_cell
+  - jupyter_list_kernelspecs
+  - jupyter_nbconvert
+  - jupyter_upload_file
+  - jupyter_save_file
+  - jupyter_mkdir
+  - jupyter_delete_file
+  - jupyter_rename_file
+  - jupyter_copy_file
+  - jupyter_get_job_result
+  - jupyter_list_jobs
+  - jupyter_cancel_job

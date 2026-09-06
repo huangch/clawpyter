@@ -20,10 +20,17 @@
     ]
   },
   "dependencies": {
-    "@sinclair/typebox": "^0.34.49",
-    "typescript": "^5.9.3"
+    "@sinclair/typebox": "^0.34.49"
+  },
+  "//": "yjs is a peer/optional runtime dependency. The plugin loads and runs without it (collab falls back silently). Install it to enable Y.js CRDT co-editing with jupyter-collaboration.",
+  "peerDependencies": {
+    "yjs": ">=13.5.22"
+  },
+  "peerDependenciesMeta": {
+    "yjs": { "optional": true }
   },
   "devDependencies": {
-    "@types/node": "^25.6.0"
+    "@types/node": "^25.6.0",
+    "typescript": "^5.9.3"
   }
 }

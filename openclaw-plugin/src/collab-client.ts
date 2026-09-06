@@ -4,8 +4,8 @@
 // `Y.Doc` per active notebook so edits the agent makes appear live in any
 // concurrently-open JupyterLab session and vice versa.
 //
-// If the optional dependencies (`yjs`, `ws`) are missing, `HAS_COLLAB` is
-// `false` and the calling code falls back to the Contents-API path on
+// If the optional dependencies (`yjs`) are missing, `new CollabRoom()`
+// throws and the calling code falls back to the Contents-API path on
 // `JupyterDirectClient`. The plugin still loads and runs.
 //
 // Y-types decoding helpers are adapted from
@@ -15,29 +15,41 @@
 // Lazy dependency probe
 // ---------------------------------------------------------------------------
 
-let _yjs: typeof import("yjs") | null = null;
-let _WebSocket: typeof WebSocket | null = null;
+type YjsModule = typeof import("yjs");
 
-try {
-  // `yjs` is optional — the plugin still loads when it is absent.
-  // Use eval to keep tsc from turning this into a hard module reference.
-  const dyn = new Function("m", "return require(m)") as (m: string) => unknown;
-  _yjs = dyn("yjs") as typeof import("yjs");
-} catch {
-  _yjs = null;
+let _yjsPromise: Promise<YjsModule | null> | null = null;
+let _yjsResolved: YjsModule | null = null;
+let _WebSocketResolved: typeof WebSocket | null | undefined;
+
+async function loadYjs(): Promise<YjsModule | null> {
+  if (_yjsResolved) return _yjsResolved;
+  if (!_yjsPromise) {
+    _yjsPromise = (async () => {
+      try {
+        const mod = (await import(
+          /* webpackIgnore: true */ "yjs"
+        )) as YjsModule;
+        return mod;
+      } catch {
+        return null;
+      }
+    })();
+  }
+  _yjsResolved = await _yjsPromise;
+  return _yjsResolved;
 }
 
-try {
-  // Node's built-in `WebSocket` (Node 22+) is preferred. Fall back to the
-  // `ws` package for Node 18/20 if the user installs it.
-  // The `_WebSocket` global is set below in `getWebSocketCtor`.
-  _WebSocket =
-    (globalThis as unknown as { WebSocket?: typeof WebSocket }).WebSocket ?? null;
-} catch {
-  _WebSocket = null;
+function getWebSocketCtor(): typeof WebSocket | null {
+  if (_WebSocketResolved === undefined) {
+    const g = globalThis as unknown as { WebSocket?: typeof WebSocket };
+    _WebSocketResolved = g.WebSocket ?? null;
+  }
+  return _WebSocketResolved ?? null;
 }
 
-export const HAS_COLLAB: boolean = _yjs !== null && _WebSocket !== null;
+export function hasWebSocket(): boolean {
+  return getWebSocketCtor() !== null;
+}
 
 // ---------------------------------------------------------------------------
 // Y-types decoding helpers
@@ -55,9 +67,12 @@ function ytextToStr(v: unknown): string {
 
 function yArrayToList<T = unknown>(v: unknown): T[] {
   if (v == null) return [];
-  // Y.Array supports iteration and indexed access
   try {
-    const arr = v as { length: number; [k: number]: unknown; toArray?: () => unknown[] };
+    const arr = v as {
+      length: number;
+      [k: number]: unknown;
+      toArray?: () => unknown[];
+    };
     if (typeof arr.toArray === "function") return arr.toArray() as T[];
     const out: T[] = [];
     for (let i = 0; i < arr.length; i++) out.push(arr[i] as T);
@@ -68,24 +83,13 @@ function yArrayToList<T = unknown>(v: unknown): T[] {
 }
 
 // ---------------------------------------------------------------------------
-// Y.js <-> notebook JSON translation
-//
-// JupyterLab's collaboration model exposes `ycells` as a `Y.Array<Y.Map>`
-// and per-cell content as nested `Y.Map` / `Y.Text` types on the same
-// `Y.Doc` per notebook. Source lives on each cell map's `source` key as a
-// `Y.Text`.
-//
-// See: https://jupyterlab.readthedocs.io/en/stable/extension/extension_tutorial.html
-// (Collaborative Cell List) and the datalayer/jupyter-mcp-server reference.
+// y-protocols sync framing
 // ---------------------------------------------------------------------------
 
-const YNOTEBOOK_CELLS = "ycells";
-
-// y-protocols sync message constants
 const MESSAGE_SYNC = 0;
-const MESSAGE_AWARENESS = 1;
+// MESSAGE_AWARENESS = 1 reserved for future use (awareness frames are
+// silently ignored by `decodeSyncFrame` for now).
 
-// Encode a non-negative integer as a yjs-style varint (LEB128).
 function encodeVarInt(n: number): Uint8Array {
   if (n < 0 || !Number.isFinite(n)) {
     throw new Error(`encodeVarInt: bad value ${n}`);
@@ -100,7 +104,6 @@ function encodeVarInt(n: number): Uint8Array {
   return Uint8Array.from(out);
 }
 
-// Build a y-protocols sync frame: [messageType varint] [payload]
 function encodeSyncFrame(messageType: number, payload: Uint8Array): Uint8Array {
   const typeBytes = encodeVarInt(messageType);
   const out = new Uint8Array(typeBytes.length + payload.length);
@@ -109,32 +112,31 @@ function encodeSyncFrame(messageType: number, payload: Uint8Array): Uint8Array {
   return out;
 }
 
-// Decode a y-protocols sync frame. Returns [messageType, payload] or null.
-function decodeSyncFrame(data: ArrayBuffer | Uint8Array): [number, Uint8Array] | null {
+function decodeSyncFrame(
+  data: ArrayBuffer | Uint8Array,
+): [number, Uint8Array] | null {
   const view = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
   if (view.byteLength === 0) return null;
-  // Read the leading varint for messageType.
   let typeByte = view[0];
   let type = typeByte & 0x7f;
   let offset = 1;
-  if ((typeByte & 0x80) !== 0 && offset < view.byteLength) {
-    // Multi-byte varint — for the small MESSAGE_SYNC/awareness values this
-    // branch is never taken, but handle it correctly anyway.
+  if ((typeByte & 0x80) !== 0) {
     let shift = 7;
     while ((typeByte & 0x80) !== 0 && offset < view.byteLength) {
       typeByte = view[offset++];
       type |= (typeByte & 0x7f) << shift;
       shift += 7;
     }
-  } else if ((typeByte & 0x80) !== 0) {
-    return null;
+    if (offset >= view.byteLength) return null;
   }
   return [type, view.subarray(offset)];
 }
 
-function isInCollabContext(): boolean {
-  return HAS_COLLAB && _yjs !== null;
-}
+// ---------------------------------------------------------------------------
+// Y.js <-> notebook JSON translation
+// ---------------------------------------------------------------------------
+
+const YNOTEBOOK_CELLS = "ycells";
 
 function cellIdFor(index: number): string {
   return `cell-${index}`;
@@ -148,7 +150,8 @@ export async function probeServerCollab(
   serverUrl: string,
   token: string,
 ): Promise<boolean> {
-  if (!HAS_COLLAB) return false;
+  const y = await loadYjs();
+  if (y === null || !hasWebSocket()) return false;
   const cleanUrl = serverUrl.replace(/\/$/, "");
   const url = `${cleanUrl}/api/collaboration/session/_probe_does_not_exist.ipynb`;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -159,7 +162,6 @@ export async function probeServerCollab(
       headers,
       body: JSON.stringify({ format: "json", type: "notebook" }),
     });
-    // A reachable jupyter-collaboration returns 200/201. 404 = missing.
     return res.status === 200 || res.status === 201;
   } catch {
     return false;
@@ -170,38 +172,41 @@ export async function probeServerCollab(
 // CollabRoom — one YDoc connection per notebook
 // ---------------------------------------------------------------------------
 
+export interface CollabCell {
+  cell_type: string;
+  source: string;
+  metadata?: Record<string, unknown>;
+  outputs?: unknown[];
+  execution_count?: number | null;
+}
+
 export class CollabRoom {
   readonly path: string;
-  private readonly url: string;
-  private readonly token: string;
-  private readonly Doc: typeof import("yjs").Doc;
+  private readonly wsUrl: string;
+  private readonly Y: YjsModule;
   private readonly WebSocketCtor: typeof WebSocket;
   readonly doc: import("yjs").Doc;
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
-
-  // y-protocols sync messages
   private readonly messageSync = MESSAGE_SYNC;
-  private readonly messageAwareness = MESSAGE_AWARENESS;
 
   constructor(path: string, serverUrl: string, token: string) {
-    if (!isInCollabContext()) {
-      throw new Error("Collaboration dependencies not installed (yjs + ws)");
+    const wsCtor = getWebSocketCtor();
+    if (!_yjsResolved || !wsCtor) {
+      throw new Error(
+        "Collaboration dependencies missing at CollabRoom construction",
+      );
     }
     this.path = path;
-    this.url = this.buildYjsUrl(serverUrl, path, token);
-    this.token = token;
-
-    // Both `_yjs` and `_WebSocket` are guaranteed non-null here.
-    this.Doc = (_yjs as unknown as typeof import("yjs").Doc);
-    this.WebSocketCtor = _WebSocket as typeof WebSocket;
-
-    this.doc = new this.Doc();
+    this.wsUrl = this.buildYjsUrl(serverUrl, path, token);
+    this.Y = _yjsResolved;
+    this.WebSocketCtor = wsCtor;
+    this.doc = new this.Y.Doc();
     this.connect();
   }
 
-  private buildYjsUrl(serverUrl: string, path: string, token: string): string {
+  private buildYjsUrl(serverUrl: string, _path: string, token: string): string {
     const cleanUrl = serverUrl.replace(/\/$/, "");
     const wsBase = cleanUrl.replace(/^http/, "ws");
     const search = token ? `?token=${encodeURIComponent(token)}` : "";
@@ -211,18 +216,15 @@ export class CollabRoom {
   private connect(): void {
     if (this.closed) return;
     try {
-      this.ws = new this.WebSocketCtor(this.url, ["yjs"]);
-    } catch (e) {
+      this.ws = new this.WebSocketCtor(this.wsUrl, ["yjs"]);
+    } catch {
       this.scheduleReconnect();
       return;
     }
     this.ws.binaryType = "arraybuffer";
 
     this.ws.addEventListener("open", () => {
-      // Send sync step 1 — request full state
-      const Y = _yjs as unknown as typeof import("yjs");
-      const encoder = (Y as unknown as { encodeStateAsUpdate: (d: import("yjs").Doc) => Uint8Array })
-        .encodeStateAsUpdate(this.doc);
+      const encoder = this.Y.encodeStateAsUpdate(this.doc);
       this.send(this.messageSync, encoder);
     });
 
@@ -240,7 +242,6 @@ export class CollabRoom {
       // `close` will follow; nothing to do here.
     });
 
-    // Forward local doc updates to the server
     this.doc.on("update", (update: Uint8Array, origin: unknown) => {
       if (origin !== this) {
         this.send(this.messageSync, update);
@@ -265,17 +266,9 @@ export class CollabRoom {
     const frame = decodeSyncFrame(data);
     if (!frame) return;
     const [messageType, payload] = frame;
-    if (messageType !== this.messageSync) return; // ignore awareness for now
-
-    const Y = _yjs as unknown as typeof import("yjs");
-    const applyUpdate = (Y as unknown as {
-      applyUpdate: (d: import("yjs").Doc, u: Uint8Array, origin?: unknown) => void;
-    }).applyUpdate;
-    applyUpdate(this.doc, payload, this);
-    // Send our state back so the server can fill in anything we missed
-    const encoder = (Y as unknown as {
-      encodeStateAsUpdate: (d: import("yjs").Doc) => Uint8Array;
-    }).encodeStateAsUpdate(this.doc);
+    if (messageType !== this.messageSync) return;
+    this.Y.applyUpdate(this.doc, payload, this);
+    const encoder = this.Y.encodeStateAsUpdate(this.doc);
     this.send(this.messageSync, encoder);
   }
 
@@ -304,22 +297,9 @@ export class CollabRoom {
   // Cell-level read API (mirrors Hermes' `nb_to_cells`)
   // -------------------------------------------------------------------------
 
-  readCells(): Array<{
-    cell_type: string;
-    source: string;
-    metadata: Record<string, unknown>;
-    outputs?: unknown[];
-    execution_count?: number | null;
-  }> {
-    if (!isInCollabContext()) return [];
+  readCells(): CollabCell[] {
     const cellsArr = this.doc.getArray(YNOTEBOOK_CELLS);
-    const cells: Array<{
-      cell_type: string;
-      source: string;
-      metadata: Record<string, unknown>;
-      outputs?: unknown[];
-      execution_count?: number | null;
-    }> = [];
+    const cells: CollabCell[] = [];
     for (let i = 0; i < cellsArr.length; i++) {
       const cellMap = cellsArr.get(i) as unknown as {
         get: (k: string) => unknown;
@@ -327,44 +307,39 @@ export class CollabRoom {
       };
       const cellType = String(cellMap.get("cell_type") ?? "code");
       const source = ytextToStr(cellMap.get("source"));
-      const metadata = (cellMap.toJSON ? cellMap.toJSON().metadata : {}) as Record<string, unknown>;
+      const metadata = (
+        cellMap.toJSON ? cellMap.toJSON().metadata : {}
+      ) as Record<string, unknown>;
       const outputs =
         cellType === "code" ? yArrayToList(cellMap.get("outputs")) : undefined;
       const executionCount =
         cellType === "code"
           ? ((cellMap.get("execution_count") as number | null | undefined) ?? null)
           : undefined;
-      cells.push({ cell_type: cellType, source, metadata, outputs, execution_count: executionCount });
+      cells.push({
+        cell_type: cellType,
+        source,
+        metadata,
+        outputs,
+        execution_count: executionCount,
+      });
     }
     return cells;
   }
 
   // -------------------------------------------------------------------------
   // Cell-level write API
-  // Mirrors Hermes' `cells_to_nb` / `nbmodel_client.set_cells` semantics.
-  // Performs an in-place CRDT transaction so other clients see the change.
   // -------------------------------------------------------------------------
 
-  replaceAllCells(
-    cells: Array<{
-      cell_type: string;
-      source: string;
-      metadata?: Record<string, unknown>;
-      outputs?: unknown[];
-      execution_count?: number | null;
-    }>,
-  ): void {
-    if (!isInCollabContext()) return;
+  replaceAllCells(cells: CollabCell[]): void {
     this.doc.transact(() => {
       const cellsArr = this.doc.getArray(YNOTEBOOK_CELLS);
-      // Clear and rebuild — simpler than surgical inserts for the agent
-      // use case (full notebook rewrites from Contents-API).
       while (cellsArr.length > 0) cellsArr.delete(0, cellsArr.length);
       for (const cell of cells) {
-        const cellMap = new this.Doc.Map<string | number | unknown>();
+        const cellMap = new this.Y.Map<unknown>();
         cellMap.set("id", cellIdFor(cellsArr.length));
         cellMap.set("cell_type", cell.cell_type);
-        const srcText = new this.Doc.Text();
+        const srcText = new this.Y.Text();
         srcText.insert(0, cell.source);
         cellMap.set("source", srcText);
         cellMap.set("metadata", cell.metadata ?? {});
@@ -377,11 +352,17 @@ export class CollabRoom {
     }, this);
   }
 
-  /** Wait until the next doc update has been broadcast to the server. */
   async flush(): Promise<void> {
-    if (!isInCollabContext()) return;
     await Promise.resolve();
-    // Small grace period for the outgoing WebSocket frame
     await new Promise((r) => setTimeout(r, 25));
   }
+}
+
+// ---------------------------------------------------------------------------
+// Top-level helpers used by `index.ts`
+// ---------------------------------------------------------------------------
+
+export async function hasCollab(): Promise<boolean> {
+  const y = await loadYjs();
+  return y !== null && hasWebSocket();
 }

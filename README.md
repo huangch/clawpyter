@@ -15,7 +15,7 @@ Two agents are supported:
 
 ## What Can It Do?
 
-ClawPyter exposes **20 tools** (17 core + 3 compatibility wrappers) that allow the AI to fully manage Jupyter notebooks:
+ClawPyter exposes **36 tools** (33 core + 3 compatibility wrappers) that allow the AI to fully manage Jupyter notebooks:
 
 **Server & File Operations:**
 - Browse notebook files and filesystem structure
@@ -80,13 +80,13 @@ read-modify-write path. Set `JUPYTER_COLLAB_MODE=off` to force the legacy path.
 
 > **Note:** Live co-editing is currently implemented only in the **Hermes** plugin
 > (`hermes-plugin/`). The OpenClaw plugin (`openclaw-plugin/`) still uses the
-> Contents-API path; co-editing support there is planned for a future release.
+> Contents-API path; full two-way co-editing when `yjs` is installed.
 
 **Key files:**
-- **`openclaw-plugin/src/index.ts`** — TypeScript plugin. Registers all 20 tools with OpenClaw.
+- `openclaw-plugin/src/index.ts` — TypeScript plugin. Registers all 36 tools with OpenClaw.
 - **`openclaw-plugin/src/jupyter-client.ts`** — `JupyterDirectClient` class. REST API + WebSocket client (TypeScript).
 - **`openclaw-plugin/skills/clawpyter/SKILL.md`** — Operating instructions for the AI (OpenClaw).
-- **`hermes-plugin/`** — Python plugin for Hermes Agent (mirrors all 20 tools).
+- **`hermes-plugin/`** — Python plugin for Hermes Agent (mirrors all 36 tools).
 - **`hermes-plugin/SKILL.md`** — Operating instructions for the AI (Hermes).
 
 ---
@@ -400,7 +400,7 @@ The AI calls `jupyter_connect_to_jupyter` first. All subsequent operations go to
 
 ## Tool Reference
 
-All 20 tools are prefixed with `jupyter_`. They work identically in both the OpenClaw (TypeScript) and Hermes Agent (Python) plugins.
+All 36 tools are prefixed with `jupyter_`. They work identically in both the OpenClaw (TypeScript) and Hermes Agent (Python) plugins. `jupyter_execute_code` and `jupyter_execute_cell` accept a `run_async=true` flag that returns a `job_id` immediately; pair that with `jupyter_get_job_result`, `jupyter_list_jobs`, and `jupyter_cancel_job` to drive long-running cells without blocking the agent session.
 
 ### Server Tools (4 tools)
 
@@ -740,7 +740,7 @@ clawpyter/
 ├── hermes-plugin/                    # Python plugin for Hermes Agent
 │   ├── plugin.yaml                   # Hermes manifest (name, version, provides_tools)
 │   ├── __init__.py                   # register(ctx) — wires tools and installs skill
-│   ├── schemas.py                    # OpenAI-format tool schemas for all 20 tools
+│   ├── schemas.py                    # OpenAI-format tool schemas for all 36 tools
 │   ├── tools.py                      # Python Jupyter client (REST + WebSocket)
 │   ├── collab_client.py              # Y.js CRDT client for live co-editing
 │   └── SKILL.md                      # Skill file auto-installed to ~/.hermes/skills/clawpyter/
@@ -748,7 +748,7 @@ clawpyter/
 │   ├── openclaw.plugin.json          # OpenClaw plugin metadata and config schema
 │   ├── skills/clawpyter/SKILL.md     # Skill file bundled with the OpenClaw plugin
 │   ├── src/
-│   │   ├── index.ts                  # Registers all 20 tools with OpenClaw
+│   │   ├── index.ts                  # Registers all 36 tools with OpenClaw
 │   │   └── jupyter-client.ts         # JupyterDirectClient: REST API + WebSocket client
 │   ├── package.json
 │   └── tsconfig.json

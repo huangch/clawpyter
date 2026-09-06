@@ -3,15 +3,62 @@
   "name": "ClawPyter",
   "description": "Jupyter integration for OpenClaw",
   "skills": ["skills/clawpyter"],
+  "contracts": {
+    "tools": [
+      "jupyter_server_info",
+      "jupyter_connect_to_jupyter",
+      "jupyter_list_files",
+      "jupyter_list_kernels",
+      "jupyter_list_kernelspecs",
+      "jupyter_create_notebook",
+      "jupyter_use_notebook",
+      "jupyter_list_notebooks",
+      "jupyter_restart_notebook",
+      "jupyter_restart_notebook_compat",
+      "jupyter_unuse_notebook",
+      "jupyter_unuse_notebook_compat",
+      "jupyter_read_notebook",
+      "jupyter_read_notebook_compat",
+      "jupyter_insert_cell",
+      "jupyter_overwrite_cell_source",
+      "jupyter_execute_cell",
+      "jupyter_insert_execute_code_cell",
+      "jupyter_read_cell",
+      "jupyter_delete_cell",
+      "jupyter_execute_code",
+      "jupyter_edit_cell_source",
+      "jupyter_clear_cell_outputs",
+      "jupyter_clear_cell_output",
+      "jupyter_move_cell",
+      "jupyter_interrupt_cell",
+      "jupyter_nbconvert",
+      "jupyter_upload_file",
+      "jupyter_save_file",
+      "jupyter_mkdir",
+      "jupyter_delete_file",
+      "jupyter_rename_file",
+      "jupyter_copy_file",
+      "jupyter_get_job_result",
+      "jupyter_list_jobs",
+      "jupyter_cancel_job"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "jupyterToken": { "type": "string", "description": "Authentication token for the Jupyter server. Generated automatically by start-jpy.sh and saved in environment. Required for secure access to the Jupyter server."  },
-      "jupyterUrl": { "type": "string", "description": "URL of the Jupyter Lab server. Default: http://127.0.0.1:8888. Used to construct notebook access URLs and verify connectivity."  },
+      "jupyterToken": { "type": "string", "description": "Authentication token for the Jupyter server. Generated automatically by start-jpy.sh and saved in environment. Both 'jupyterToken' (camelCase) and 'jupyter_token' (snake_case) are accepted; the resolver honors whichever is set."  },
+      "jupyter_token": { "type": "string", "description": "Alias for jupyterToken (snake_case form, parity with Hermes env-var config)."  },
+      "jupyterUrl": { "type": "string", "description": "URL of the Jupyter Lab server. Default: http://127.0.0.1:8888. Both 'jupyterUrl' and 'jupyter_url' are accepted."  },
+      "jupyter_url": { "type": "string", "description": "Alias for jupyterUrl."  },
       "notebookDir": { "type": "string", "description": "Physical directory path where notebooks are stored on the Jupyter server. Used with defaultNotebook to auto-increment notebook names (e.g., ~/.openclaw/jupyter_home). Relative paths are resolved from Jupyter root."  },
       "defaultNotebook": { "type": "string", "description": "Default notebook name used when creating new notebooks without explicit path. Defaults to 'Untitled' if not specified. Auto-increments to Untitled-1, Untitled-2, etc. if files exist."  },
-      "timeoutMs": { "type": "number", "description": "Request timeout in milliseconds for Jupyter operations. Default: 30000 (30 seconds). Increase for slow networks or long-running operations."  }
+      "timeoutMs": { "type": "number", "description": "Request timeout in milliseconds for Jupyter operations. Default: 30000 (30 seconds). Increase for slow networks or long-running operations."  },
+      "collabMode": {
+        "type": "string",
+        "enum": ["auto", "on", "off"],
+        "description": "Y.js CRDT co-editing policy. Mirrors the Hermes plugin's JUPYTER_COLLAB_MODE. 'auto' (default) probes the server once and uses CRDT when jupyter-collaboration is reachable; 'on' requires CRDT; 'off' forces the Contents-API (whole-file PUT) path. Requires the optional yjs npm dependency at runtime; the plugin loads and runs without it."
+      }
     }
   }
 }

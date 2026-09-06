@@ -32,6 +32,16 @@ except ImportError:
     _HAS_WEBSOCKETS = False
 
 from . import collab_client as _collab
+from .jobs import (
+    JobState,
+    delete_job,
+    finalize,
+    format_outputs as _format_job_outputs,
+    get_job,
+    list_jobs,
+    register_job,
+    summarise as _summarise_job,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -305,6 +315,35 @@ async def _get_notebook(path: str) -> dict:
     return data["content"]
 
 
+async def _resolve_cell_index(
+    notebook: dict,
+    cell_index: "int | None",
+    cell_id: "str | None",
+) -> int:
+    """Resolve the cell index for an op given either `cell_index` or `cell_id`.
+
+    Mirrors jmcp's `cell_ids.resolve` logic: cell_id is preferred when both
+    are supplied. Returns the resolved int index, or raises ValueError for
+    invalid inputs.
+    """
+    if cell_id is None and cell_index is None:
+        raise ValueError("Either cell_index or cell_id must be supplied.")
+    cells = notebook.get("cells", []) or []
+    if cell_id is not None:
+        for i, c in enumerate(cells):
+            if c.get("id") == cell_id:
+                return i
+        raise ValueError(
+            f"No cell with cell_id='{cell_id}' (notebook has {len(cells)} cells)."
+        )
+    # cell_index path
+    if cell_index < 0 or cell_index >= len(cells):
+        raise ValueError(
+            f"cell_index {cell_index} is out of range (notebook has {len(cells)} cells)."
+        )
+    return cell_index
+
+
 async def _put_notebook(path: str, notebook: dict) -> None:
     encoded = quote(path, safe="/")
     await _req("PUT", f"/api/contents/{encoded}", {"type": "notebook", "content": notebook})
@@ -382,6 +421,26 @@ def _resolve_notebook_identifier(args: dict) -> str:
     if name and name.strip():
         return name
     return args.get("notebook_path", "")
+
+
+def _resolve_target_session(args: dict) -> Optional[dict]:
+    """Pick a session by optional `notebook_name`; falls back to current notebook.
+
+    Returns the session dict from `_state.sessions`, or None when no current
+    notebook is set and `notebook_name` is also unset / unknown.
+
+    Multi-notebook support: when `notebook_name` is provided, look it up in
+    `_state.sessions` and use that session instead of the current one. When
+    omitted, use the existing current-notebook behaviour for backwards
+    compatibility. The session dict exposes `path`, `kernel_id`, and `name`.
+    """
+    name = args.get("notebook_name", "")
+    if isinstance(name, str) and name.strip():
+        target = name.strip()
+        return _state.sessions.get(target)
+    if _state.current_notebook and _state.current_notebook in _state.sessions:
+        return _state.sessions[_state.current_notebook]
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -754,83 +813,165 @@ async def jupyter_insert_cell(args: dict, **kwargs) -> str:
 
 
 async def jupyter_overwrite_cell_source(args: dict, **kwargs) -> str:
-    current = _state.current_notebook
-    if not current:
-        return "Overwrite cell\n\nNo active notebook. Use jupyter_use_notebook first."
+    sess = _resolve_target_session(args)
+    if sess is None:
+        return "Overwrite cell\n\nNo active notebook. Use jupyter_use_notebook first (or pass notebook_name)."
 
-    sess = _state.sessions[current]
+    current = sess["name"]
     room = _get_collab_room(current)
-    cell_index = int(args.get("cell_index", 0))
+    cell_index_arg = args.get("cell_index")
+    cell_id = args.get("cell_id")
+    if cell_index_arg is not None:
+        try:
+            cell_index = int(cell_index_arg)
+        except (TypeError, ValueError):
+            return "Overwrite cell\n\n'cell_index' must be an integer."
+    else:
+        cell_index = None
     new_source = str(args.get("cell_source", ""))
 
     if room is not None:
-        total = room.cell_count()
-        if cell_index >= total:
-            return (
-                f"Overwrite cell {cell_index}\n\n"
-                f"Cell index {cell_index} is out of range. Notebook has {total} cells."
-            )
-        old_source = room.get_cell(cell_index).get("source", "")
-        room.set_cell_source(cell_index, new_source)
+        # CRDT path: cells carry `id` on cell maps
+        def _resolve_in_room(room_obj):
+            for i in range(room_obj.cell_count()):
+                cv = room_obj.get_cell(i)
+                if cell_id is not None and cv.get("id") == cell_id:
+                    return i
+            if cell_id is not None:
+                raise ValueError(
+                    f"No cell with cell_id='{cell_id}' (notebook has {room_obj.cell_count()} cells)."
+                )
+            total = room_obj.cell_count()
+            if cell_index < 0 or cell_index >= total:
+                raise ValueError(f"Cell index {cell_index} out of range (notebook has {total} cells).")
+            return cell_index
+        try:
+            cell_index_resolved = _resolve_in_room(room)
+        except ValueError as e:
+            return f"Overwrite cell\n\n[ERROR] {e}"
+        old_source = room.get_cell(cell_index_resolved).get("source", "")
+        room.set_cell_source(cell_index_resolved, new_source)
     else:
         nb = await _get_notebook(sess["path"])
+        try:
+            cell_index_resolved = await _resolve_cell_index(nb, cell_index, cell_id)
+        except ValueError as e:
+            return f"Overwrite cell\n\n[ERROR] {e}"
         cells = nb.get("cells", [])
-        if cell_index >= len(cells):
-            return (
-                f"Overwrite cell {cell_index}\n\n"
-                f"Cell index {cell_index} is out of range. Notebook has {len(cells)} cells."
-            )
-        cell = cells[cell_index]
+        cell = cells[cell_index_resolved]
         old_source = cell.get("source", "")
-        cell["source"] = new_source
+        cells[cell_index_resolved]["source"] = new_source
         if cell.get("cell_type") == "code":
-            cell["outputs"] = []
-            cell["execution_count"] = None
-        nb["cells"] = cells
+            cells[cell_index_resolved]["outputs"] = []
+            cells[cell_index_resolved]["execution_count"] = None
         await _put_notebook(sess["path"], nb)
 
     diff = _diff_source(old_source, new_source)
-    return f"Overwrite cell {cell_index}\n\n{diff}"
+    return f"Overwrite cell {cell_index_resolved}\n\n{diff}"
 
 
 async def jupyter_execute_cell(args: dict, **kwargs) -> str:
-    current = _state.current_notebook
-    if not current:
-        return "Execute cell\n\nNo active notebook. Use jupyter_use_notebook first."
+    """Synchronous by default; pass run_async=true to fire-and-forget."""
+    sess = _resolve_target_session(args)
+    if sess is None:
+        return "Execute cell\n\nNo active notebook. Use jupyter_use_notebook first (or pass notebook_name)."
 
-    sess = _state.sessions[current]
+    current = sess["name"]
     room = _get_collab_room(current)
-    cell_index = int(args.get("cell_index", 0))
+    cell_index_arg = args.get("cell_index")
+    cell_id = args.get("cell_id")
+    if cell_index_arg is not None:
+        try:
+            cell_index = int(cell_index_arg)
+        except (TypeError, ValueError):
+            return "Execute cell\n\n'cell_index' must be an integer."
+    else:
+        cell_index = None
+    run_async = bool(args.get("run_async", False))
 
     if room is not None:
-        total = room.cell_count()
-        if cell_index >= total:
-            return (
-                f"Execute cell {cell_index}\n\n"
-                f"Cell index {cell_index} is out of range. Notebook has {total} cells."
-            )
-        cell_view = room.get_cell(cell_index)
+        def _resolve_in_room(room_obj):
+            for i in range(room_obj.cell_count()):
+                cv = room_obj.get_cell(i)
+                if cell_id is not None and cv.get("id") == cell_id:
+                    return i
+            if cell_id is not None:
+                raise ValueError(
+                    f"No cell with cell_id='{cell_id}' (notebook has {room_obj.cell_count()} cells)."
+                )
+            total = room_obj.cell_count()
+            if cell_index < 0 or cell_index >= total:
+                raise ValueError(f"Cell index {cell_index} out of range (notebook has {total} cells).")
+            return cell_index
+        try:
+            cell_index_resolved = _resolve_in_room(room)
+        except ValueError as e:
+            return f"Execute cell\n\n[ERROR] {e}"
+        cell_view = room.get_cell(cell_index_resolved)
         if cell_view.get("cell_type") != "code":
             return (
-                f"Execute cell {cell_index}\n\n"
-                f"Cell {cell_index} is not a code cell (type: {cell_view.get('cell_type')})."
+                f"Execute cell {cell_index_resolved}\n\n"
+                f"Cell {cell_index_resolved} is not a code cell (type: {cell_view.get('cell_type')})."
             )
         source = cell_view.get("source", "")
+        prev_exec_count = int(cell_view.get("execution_count") or 0)
     else:
         nb = await _get_notebook(sess["path"])
-        cells = nb.get("cells", [])
-        if cell_index >= len(cells):
-            return (
-                f"Execute cell {cell_index}\n\n"
-                f"Cell index {cell_index} is out of range. Notebook has {len(cells)} cells."
-            )
-        cell = cells[cell_index]
+        try:
+            cell_index_resolved = await _resolve_cell_index(nb, cell_index, cell_id)
+        except ValueError as e:
+            return f"Execute cell\n\n[ERROR] {e}"
+        cell_arr = nb.get("cells", [])
+        cell = cell_arr[cell_index_resolved]
         if cell.get("cell_type") != "code":
             return (
-                f"Execute cell {cell_index}\n\n"
-                f"Cell {cell_index} is not a code cell (type: {cell.get('cell_type')})."
+                f"Execute cell {cell_index_resolved}\n\n"
+                f"Cell {cell_index_resolved} is not a code cell (type: {cell.get('cell_type')})."
             )
         source = cell.get("source", "")
+        prev_exec_count = int(cell.get("execution_count") or 0)
+
+    if run_async:
+        async def _persist(job: JobState, _status: str) -> None:
+            """Write the buffered outputs back to the cell when the kernel done."""
+            nb_outputs = [
+                {"output_type": "stream", "name": "stdout", "text": o.get("text", "")}
+                if o.get("stream") != "stderr"
+                else {"output_type": "stream", "name": "stderr", "text": o.get("text", "")}
+                for o in job.outputs
+            ]
+            # Pick the last result's execution_count if present, else prev+1.
+            exec_count = prev_exec_count + 1
+            for o in reversed(job.outputs):
+                ec = o.get("execution_count")
+                if ec is not None:
+                    exec_count = ec
+                    break
+            try:
+                if _get_collab_room(current) is not None:
+                    _get_collab_room(current).write_outputs(cell_index_resolved, nb_outputs, exec_count)
+                else:
+                    nb2 = await _get_notebook(sess["path"])
+                    nb2["cells"][cell_index_resolved]["outputs"] = nb_outputs
+                    nb2["cells"][cell_index_resolved]["execution_count"] = exec_count
+                    await _put_notebook(sess["path"], nb2)
+            except Exception as e:
+                logger.warning("jupyter_execute_cell async persist failed: %s", e)
+
+        job_id = await _enqueue_async_execute(
+            notebook_name=current,
+            notebook_path=sess["path"],
+            kernel_id=sess["kernel_id"],
+            code=source,
+            persist_cell_index=cell_index_resolved,
+            on_complete=_persist,
+        )
+        return (
+            f"Execute cell {cell_index_resolved} (async)\n\n"
+            f"Job queued: {job_id}\n"
+            f"Cell will be updated in-place when the kernel completes.\n\n"
+            f"Poll: jupyter_get_job_result(job_id=\"{job_id}\", wait=true)"
+        )
 
     timeout_s = float(args.get("timeout", 90))
     outputs = await _execute_code_ws(sess["kernel_id"], source, timeout_s)
@@ -839,31 +980,30 @@ async def jupyter_execute_cell(args: dict, **kwargs) -> str:
     ]
 
     if room is not None:
-        # Compute next execution_count by scanning current YDoc cells
         max_count = 0
         for i in range(room.cell_count()):
             c = room.get_cell(i)
             if c.get("cell_type") == "code" and c.get("execution_count"):
                 max_count = max(max_count, int(c["execution_count"]))
-        room.write_outputs(cell_index, nb_outputs, max_count + 1)
+        room.write_outputs(cell_index_resolved, nb_outputs, max_count + 1)
     else:
         nb = await _get_notebook(sess["path"])
         cells = nb.get("cells", [])
-        cells[cell_index]["outputs"] = nb_outputs
-        cells[cell_index]["execution_count"] = (cells[cell_index].get("execution_count") or 0) + 1
+        cells[cell_index_resolved]["outputs"] = nb_outputs
+        cells[cell_index_resolved]["execution_count"] = (cells[cell_index_resolved].get("execution_count") or 0) + 1
         nb["cells"] = cells
         await _put_notebook(sess["path"], nb)
 
     result = "\n".join(outputs)
-    return f"Execute cell {cell_index}\n\n{result}"
+    return f"Execute cell {cell_index_resolved}\n\n{result}"
 
 
 async def jupyter_insert_execute_code_cell(args: dict, **kwargs) -> str:
-    current = _state.current_notebook
-    if not current:
-        return "Insert + execute code cell\n\nNo active notebook. Use jupyter_use_notebook first."
+    sess = _resolve_target_session(args)
+    if sess is None:
+        return "Insert + execute code cell\n\nNo active notebook. Use jupyter_use_notebook first (or pass notebook_name)."
 
-    sess = _state.sessions[current]
+    current = sess["name"]
     room = _get_collab_room(current)
     cell_index = int(args.get("cell_index", -1))
     cell_source = str(args.get("cell_source", ""))
@@ -925,33 +1065,72 @@ async def jupyter_insert_execute_code_cell(args: dict, **kwargs) -> str:
 
 
 async def jupyter_read_cell(args: dict, **kwargs) -> str:
-    current = _state.current_notebook
-    if not current:
-        return "Read cell\n\nNo active notebook. Use jupyter_use_notebook first."
+    sess = _resolve_target_session(args)
+    if sess is None:
+        return "Read cell\n\nNo active notebook. Use jupyter_use_notebook first (or pass notebook_name)."
 
-    sess = _state.sessions[current]
+    current = sess["name"]
     room = _get_collab_room(current)
-    cell_index = int(args.get("cell_index", 0))
+    cell_index_arg = args.get("cell_index")
+    cell_id = args.get("cell_id")
+    if cell_index_arg is not None:
+        try:
+            cell_index = int(cell_index_arg)
+        except (TypeError, ValueError):
+            return "Read cell\n\n'cell_index' must be an integer."
+    else:
+        cell_index = None
 
     if room is not None:
-        total = room.cell_count()
-        if cell_index >= total:
-            return (
-                f"Read cell {cell_index}\n\n"
-                f"Cell index {cell_index} is out of range. Notebook has {total} cells."
-            )
-        cell = room.get_cell(cell_index)
+        def _resolve_in_room(room_obj):
+            for i in range(room_obj.cell_count()):
+                cv = room_obj.get_cell(i)
+                if cell_id is not None and cv.get("id") == cell_id:
+                    return i
+            if cell_id is not None:
+                raise ValueError(
+                    f"No cell with cell_id='{cell_id}' (notebook has {room_obj.cell_count()} cells)."
+                )
+            total = room_obj.cell_count()
+            if cell_index < 0 or cell_index >= total:
+                raise ValueError(f"Cell index {cell_index} out of range (notebook has {total} cells).")
+            return cell_index
+        try:
+            cell_index_resolved = _resolve_in_room(room)
+        except ValueError as e:
+            return f"Read cell\n\n[ERROR] {e}"
+        cell = room.get_cell(cell_index_resolved)
     else:
         nb = await _get_notebook(sess["path"])
+        try:
+            cell_index_resolved = await _resolve_cell_index(nb, cell_index, cell_id)
+        except ValueError as e:
+            return f"Read cell\n\n[ERROR] {e}"
         cells = nb.get("cells", [])
-        if cell_index >= len(cells):
-            return (
-                f"Read cell {cell_index}\n\n"
-                f"Cell index {cell_index} is out of range. Notebook has {len(cells)} cells."
-            )
-        cell = cells[cell_index]
+        cell = cells[cell_index_resolved]
 
     include_outputs = args.get("include_outputs", True)
+
+    lines = [
+        f"Index: {cell_index_resolved}",
+        f"ID: {cell.get('id') or '(none)'}",
+        f"Type: {cell.get('cell_type')}",
+        f"Execution count: {cell.get('execution_count') or '-'}",
+        f"Source:\n{cell.get('source', '')}",
+    ]
+
+    if include_outputs and cell.get("cell_type") == "code" and cell.get("outputs"):
+        lines.append("Outputs:")
+        for out in cell["outputs"]:
+            text = out.get("text") if isinstance(out, dict) else None
+            if text:
+                lines.append("".join(text) if isinstance(text, list) else text)
+            elif isinstance(out, dict) and out.get("data"):
+                plain = out["data"].get("text/plain")
+                if plain:
+                    lines.append(str(plain))
+
+    return f"Read cell {cell_index_resolved}\n\n" + "\n".join(lines)
 
     lines = [
         f"Index: {cell_index}",
@@ -1017,14 +1196,601 @@ async def jupyter_delete_cell(args: dict, **kwargs) -> str:
 
 
 async def jupyter_execute_code(args: dict, **kwargs) -> str:
-    current = _state.current_notebook
-    if not current:
-        return "Execute code\n\nNo active notebook. Use jupyter_use_notebook first."
+    """Synchronous by default; pass run_async=true to fire-and-forget.
 
-    sess = _state.sessions[current]
+    Optional `kernel_id` lets the agent target a raw (no-notebook) kernel.
+    Optional `notebook_name` picks a non-current but already-activated notebook.
+    """
+    # Multi-notebook: notebook_name takes precedence; then current notebook; else raw kernel_id only.
+    sess = _resolve_target_session(args)
+    explicit_kernel_id = args.get("kernel_id")
+    current = sess["name"] if sess else None
+
     code = str(args.get("code", ""))
-    timeout_s = min(float(args.get("timeout", 30)), 60.0)
+    run_async = bool(args.get("run_async", False))
 
-    outputs = await _execute_code_ws(sess["kernel_id"], code, timeout_s)
+    # Resolve which kernel to talk to.
+    if explicit_kernel_id:
+        kernel_id = str(explicit_kernel_id)
+        notebook_path = sess["path"] if sess else f"(raw kernel {kernel_id})"
+        notebook_name = current or "(raw)"
+    elif sess is not None:
+        kernel_id = sess["kernel_id"]
+        notebook_path = sess["path"]
+        notebook_name = current
+    else:
+        return (
+            "Execute code\n\nNo active notebook and no 'kernel_id' provided. "
+            "Call jupyter_use_notebook first or pass kernel_id=<existing_kernel_id>."
+        )
+
+    if run_async:
+        job_id = await _enqueue_async_execute(
+            notebook_name=notebook_name,
+            notebook_path=notebook_path,
+            kernel_id=kernel_id,
+            code=code,
+            persist_cell_index=None,
+        )
+        return (
+            "Execute code (async)\n\n"
+            f"Job queued: {job_id}\n"
+            f"target: {notebook_path}\n"
+            f"kernel: {kernel_id}\n\n"
+            f"Poll: jupyter_get_job_result(job_id=\"{job_id}\", wait=true)"
+        )
+
+    timeout_s = min(float(args.get("timeout", 30)), 60.0)
+    outputs = await _execute_code_ws(kernel_id, code, timeout_s)
     result = "\n".join(outputs)
     return f"Execute code\n\n{result}"
+
+
+# ===========================================================================
+# New tools (added 2026-09-06) — close the REST-API gap with jupyter-mcp-server:
+#   jupyter_edit_cell_source    find-and-replace in one cell's source
+#   jupyter_clear_cell_outputs  drop stdout/image outputs without removing cells
+#   jupyter_move_cell           relocate one cell to a new index
+#   jupyter_interrupt_cell      SIGINT-stop a running cell without killing state
+#   jupyter_list_kernelspecs    enumerate python3/r/julia/... kernelspecs
+#   jupyter_nbconvert           convert notebook to html/python/script/...
+#   jupyter_upload_file         PUT file content (text or base64)
+#   jupyter_save_file           text-friendly alias for jupyter_upload_file
+#   jupyter_mkdir               PUT a directory entry
+#   jupyter_delete_file         DELETE /api/contents/<path>
+#   jupyter_rename_file         PATCH /api/contents/<old>  (preserves mtime)
+#   jupyter_copy_file           POST /api/contents/<old>/copy
+# ===========================================================================
+
+
+async def _interrupt_kernel(kernel_id: str) -> None:
+    await _req("POST", f"/api/kernels/{kernel_id}/interrupt", body={})
+
+
+async def _list_kernelspecs() -> str:
+    data = await _req("GET", "/api/kernelspecs")
+    specs = (data or {}).get("kernelspecs", {}) if isinstance(data, dict) else {}
+    if not specs:
+        return "No kernel specifications found on the Jupyter server."
+    rows = []
+    for name in sorted(specs.keys()):
+        spec = specs[name].get("spec", {})
+        env = spec.get("env", {}) or {}
+        env_str = ";".join(f"{k}={v}" for k, v in env.items())[:200] if env else "unknown"
+        argv = spec.get("argv", []) or []
+        argv_sample = " ".join(argv[:5]) if isinstance(argv, list) else ""
+        rows.append([
+            name,
+            spec.get("display_name", "unknown"),
+            spec.get("language", "unknown"),
+            spec.get("codemirror_mode", "auto"),
+            env_str,
+            argv_sample or "n/a",
+            str(spec.get("help_links", "n/a")),
+            str(specs[name].get("default", "false")).lower(),
+        ])
+    return _tsv(
+        [
+            "Name",
+            "Display_Name",
+            "Language",
+            "CodeMirror_Mode",
+            "Environment",
+            "Argv_Sample",
+            "Help_Links",
+            "Is_Default",
+        ],
+        rows,
+    )
+
+
+async def _nbconvert(path: str, fmt: str, download_as: str = "") -> str:
+    encoded = quote(path, safe="/")
+    await _req("POST", f"/api/nbconvert/{encoded}", body={"type": fmt})
+    # Re-fetch as text. The Jupyter server returns the converted body as the
+    # response to a GET; the POST above merely commits the conversion.
+    if not _HAS_HTTPX:
+        return f"[nbconvert POST committed; install httpx to fetch output]"
+    async with httpx.AsyncClient(timeout=_state.timeout_s) as client:
+        resp = await client.get(
+            f"{_state.jupyter_url}/api/nbconvert/{encoded}",
+            headers={**_auth_headers(), "Accept": "text/plain"},
+            params={} if not download_as else {},
+        )
+    return resp.text or f"[nbconvert returned empty body for {path} → {fmt}]"
+
+
+async def _upload_file(path: str, content: str, fmt: str = "text") -> None:
+    encoded = quote(path, safe="/")
+    await _req("PUT", f"/api/contents/{encoded}", body={
+        "type": "file",
+        "format": fmt,
+        "content": content,
+    })
+
+
+async def _mkdir(path: str) -> None:
+    encoded = quote(path, safe="/")
+    await _req("PUT", f"/api/contents/{encoded}", body={"type": "directory"})
+
+
+async def _delete_file(path: str) -> None:
+    encoded = quote(path, safe="/")
+    await _req("DELETE", f"/api/contents/{encoded}")
+
+
+async def _rename_file(old_path: str, new_path: str) -> None:
+    encoded = quote(old_path, safe="/")
+    await _req("PATCH", f"/api/contents/{encoded}", body={"path": new_path})
+
+
+async def _copy_file(old_path: str, new_path: str) -> None:
+    encoded = quote(old_path, safe="/")
+    await _req("POST", f"/api/contents/{encoded}/copy", body={"new_path": new_path})
+
+
+async def jupyter_edit_cell_source(args: dict, **kwargs) -> str:
+    """Apply a literal find-and-replace to one cell's source."""
+    sess = _resolve_target_session(args)
+    if sess is None:
+        return "Edit cell\n\nNo active notebook. Use jupyter_use_notebook first (or pass notebook_name)."
+    current = sess["name"]
+    room = _get_collab_room(current)
+
+    cell_index_arg = args.get("cell_index")
+    cell_id = args.get("cell_id")
+    if cell_index_arg is not None:
+        try:
+            cell_index = int(cell_index_arg)
+        except (TypeError, ValueError):
+            return "Edit cell\n\n'cell_index' must be an integer."
+    else:
+        cell_index = None
+
+    old_string = str(args.get("old_string", ""))
+    new_string = str(args.get("new_string", ""))
+    replace_all = bool(args.get("replace_all", False))
+    if not old_string:
+        return "Edit cell\n\n'old_string' is required."
+
+    nb = await _get_notebook_on_room(sess["path"]) if await _ensure_collab_probed() else await _get_notebook_raw(sess["path"])
+    try:
+        cell_index_resolved = await _resolve_cell_index(nb, cell_index, cell_id)
+    except ValueError as e:
+        return f"Edit cell\n\n[ERROR] {e}"
+    cells = nb.get("cells", [])
+    old_source = cells[cell_index_resolved].get("source", "") or ""
+    if replace_all:
+        occurrences = old_source.count(old_string)
+        new_source = old_source.replace(old_string, new_string)
+    else:
+        occurrences = 1 if old_string in old_source else 0
+        new_source = old_source.replace(old_string, new_string)
+    if occurrences == 0:
+        return f"Edit cell\n\nNo occurrence of old_string found in cell {cell_index_resolved}. Use jupyter_read_cell to inspect."
+    cells[cell_index_resolved]["source"] = new_source
+    await _save_notebook_via_collab_or_put(sess["path"], nb)
+
+    diff = _diff_source(old_source, new_source)
+    return (
+        f"Edit cell {cell_index_resolved}\n\nReplaced {occurrences} occurrence(s).\n\n"
+        f"{diff}\n\n[New cell source]\n{new_source}"
+    )
+
+
+async def jupyter_clear_cell_outputs(args: dict, **kwargs) -> str:
+    """Drop outputs from one or more code cells, preserving the cells themselves."""
+    sess = _resolve_target_session(args)
+    if sess is None:
+        return "Clear cell outputs\n\nNo active notebook. Use jupyter_use_notebook first (or pass notebook_name)."
+    current = sess["name"]
+
+    raw = args.get("cell_indices")
+    targets_all = raw is None or raw == [] or raw == ""
+    explicit = [] if targets_all else [int(i) for i in raw if isinstance(i, (int, float))]
+
+    nb = await _get_notebook_on_room(sess["path"]) if await _ensure_collab_probed() else await _get_notebook_raw(sess["path"])
+    cells = nb.get("cells", [])
+    cleared_count = 0
+    for i, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        if not (targets_all or i in explicit):
+            continue
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        cleared_count += 1
+    await _save_notebook_via_collab_or_put(sess["path"], nb)
+
+    scope = "all code cells" if targets_all else f"{cleared_count} cell(s)"
+    return f"Clear cell outputs\n\nCleared outputs from {scope}."
+
+
+async def jupyter_clear_cell_output(args: dict, **kwargs) -> str:
+    """Clear the outputs of a single cell. jmcp-compatible thin wrapper over the plural."""
+    sess = _resolve_target_session(args)
+    if sess is None:
+        return "Clear cell output\n\nNo active notebook. Use jupyter_use_notebook first (or pass notebook_name)."
+    current = sess["name"]
+
+    cell_index = args.get("cell_index")
+    cell_id = args.get("cell_id")
+    if cell_index is None and cell_id is None:
+        return "Clear cell output\n\n[ERROR] Provide either cell_index or cell_id."
+    if cell_index is None:
+        cell_index = 0  # not used when cell_id resolves; resolver will pick the right one
+
+    try:
+        cell_index_resolved = await _resolve_cell_index(
+            await _get_notebook_raw(sess["path"]),
+            cell_index if cell_index is not None else 0,
+            cell_id,
+        )
+    except ValueError as e:
+        return f"Clear cell output\n\n[ERROR] {e}"
+
+    nb = await _get_notebook_on_room(sess["path"]) if await _ensure_collab_probed() else await _get_notebook_raw(sess["path"])
+    cells = nb.get("cells", [])
+    if cell_index_resolved < 0 or cell_index_resolved >= len(cells):
+        return f"Clear cell output\n\n[ERROR] Index {cell_index_resolved} out of range."
+    target = cells[cell_index_resolved]
+    if target.get("cell_type") != "code":
+        return f"Clear cell output\n\nCell {cell_index_resolved} is not a code cell."
+    target["outputs"] = []
+    target["execution_count"] = None
+    await _save_notebook_via_collab_or_put(sess["path"], nb)
+    return f"Clear cell output\n\nCleared outputs from cell {cell_index_resolved}."
+
+
+async def jupyter_move_cell(args: dict, **kwargs) -> str:
+    """Relocate one cell from source_index to destination_index (alias: target_index)."""
+    current = _state.current_notebook
+    if not current:
+        return "Move cell\n\nNo active notebook. Use jupyter_use_notebook first."
+    sess = _state.sessions[current]
+
+    source_index = int(args.get("source_index", -1))
+    # Accept either jmcp-style `target_index` or legacy `destination_index`.
+    if "target_index" in args:
+        destination_index = int(args["target_index"])
+    else:
+        destination_index = int(args.get("destination_index", -1))
+
+    nb = await _get_notebook_on_room(sess["path"]) if await _ensure_collab_probed() else await _get_notebook_raw(sess["path"])
+    cells = nb.get("cells", [])
+    if source_index < 0 or source_index >= len(cells):
+        return f"Move cell\n\nsource_index {source_index} out of range (notebook has {len(cells)} cells)."
+    if destination_index < 0 or destination_index >= len(cells):
+        return f"Move cell\n\ndestination_index {destination_index} out of range (notebook has {len(cells)} cells)."
+    if source_index == destination_index:
+        return "Move cell\n\nsource and destination are identical; nothing moved."
+
+    moved = cells.pop(source_index)
+    # After pop, destination > source shifts left by one.
+    if destination_index > source_index:
+        destination_index -= 1
+    destination_index = min(destination_index, len(cells))
+    cells.insert(destination_index, moved)
+    await _save_notebook_via_collab_or_put(sess["path"], nb)
+
+    return f"Move cell\n\nMoved cell from index {source_index} to index {destination_index}."
+
+
+async def jupyter_interrupt_cell(args: dict, **kwargs) -> str:
+    """SIGINT a running kernel without resetting state."""
+    current = _state.current_notebook
+    if not current:
+        return "Interrupt cell\n\nNo active notebook. Use jupyter_use_notebook first."
+    sess = _state.sessions[current]
+    try:
+        await _interrupt_kernel(sess["kernel_id"])
+        return f"Interrupt cell\n\nInterrupt signal sent to kernel {sess['kernel_id']}."
+    except Exception as e:
+        return f"Interrupt cell\n\n[ERROR] interrupt kernel failed: {e}"
+
+
+async def jupyter_list_kernelspecs(args: dict, **kwargs) -> str:
+    """List available kernel specifications (python3, r, julia, ...)."""
+    try:
+        tsv = await _list_kernelspecs()
+    except Exception as e:
+        return f"Jupyter kernelspecs\n\n[ERROR] {e}"
+    return f"Jupyter kernelspecs\n\n{tsv}"
+
+
+async def jupyter_nbconvert(args: dict, **kwargs) -> str:
+    """Convert a notebook to another format via /api/nbconvert."""
+    path = str(args.get("notebook_path", ""))
+    fmt = str(args.get("format", "html"))
+    download_as = str(args.get("download_as", "")) if args.get("download_as") else ""
+    if not path:
+        return "nbconvert\n\nnotebook_path is required."
+    if fmt not in {"html", "python", "script", "markdown", "rst", "latex", "asciidoc", "slides", "pdf"}:
+        return f"nbconvert\n\nUnsupported format: {fmt}"
+    try:
+        body = await _nbconvert(path, fmt, download_as)
+    except Exception as e:
+        return f"nbconvert {path} → {fmt}\n\n[ERROR] {e}"
+    return f"nbconvert {path} → {fmt}\n\n{body[:8192]}"
+
+
+async def jupyter_upload_file(args: dict, **kwargs) -> str:
+    """PUT text or base64 file content to the Jupyter server."""
+    path = str(args.get("path", ""))
+    content = str(args.get("content", ""))
+    fmt = "base64" if args.get("format") == "base64" else "text"
+    if not path:
+        return "Upload file\n\npath is required."
+    try:
+        await _upload_file(path, content, fmt)
+        return f"Upload file\n\nUploaded {len(content)} chars ({fmt}) to {path}."
+    except Exception as e:
+        return f"Upload file\n\n[ERROR] {e}"
+
+
+async def jupyter_save_file(args: dict, **kwargs) -> str:
+    """Alias of jupyter_upload_file with text-friendly default naming."""
+    path = str(args.get("path", ""))
+    content = str(args.get("content", ""))
+    fmt = "base64" if args.get("format") == "base64" else "text"
+    if not path:
+        return "Save file\n\npath is required."
+    try:
+        await _upload_file(path, content, fmt)
+        return f"Save file\n\nSaved {len(content)} chars ({fmt}) to {path}."
+    except Exception as e:
+        return f"Save file\n\n[ERROR] {e}"
+
+
+async def jupyter_mkdir(args: dict, **kwargs) -> str:
+    """Create a directory on the Jupyter server."""
+    path = str(args.get("path", ""))
+    if not path:
+        return "mkdir\n\npath is required."
+    try:
+        await _mkdir(path)
+        return f"mkdir\n\nCreated directory {path}."
+    except Exception as e:
+        return f"mkdir\n\n[ERROR] {e}"
+
+
+async def jupyter_delete_file(args: dict, **kwargs) -> str:
+    """Delete a file or directory."""
+    path = str(args.get("path", ""))
+    if not path:
+        return "Delete file\n\npath is required."
+    try:
+        await _delete_file(path)
+        return f"Delete file\n\nDeleted {path}."
+    except Exception as e:
+        return f"Delete file\n\n[ERROR] {e}"
+
+
+async def jupyter_rename_file(args: dict, **kwargs) -> str:
+    """Rename / move (preserves sibling mtimes)."""
+    old_path = str(args.get("old_path", ""))
+    new_path = str(args.get("new_path", ""))
+    if not old_path or not new_path:
+        return "Rename file\n\nold_path and new_path are required."
+    try:
+        await _rename_file(old_path, new_path)
+        return f"Rename file\n\nRenamed {old_path} → {new_path}."
+    except Exception as e:
+        return f"Rename file\n\n[ERROR] {e}"
+
+
+async def jupyter_copy_file(args: dict, **kwargs) -> str:
+    """Server-side copy of a file or directory."""
+    old_path = str(args.get("old_path", ""))
+    new_path = str(args.get("new_path", ""))
+    if not old_path or not new_path:
+        return "Copy file\n\nold_path and new_path are required."
+    try:
+        await _copy_file(old_path, new_path)
+        return f"Copy file\n\nCopied {old_path} → {new_path}."
+    except Exception as e:
+        return f"Copy file\n\n[ERROR] {e}"
+
+
+# ===========================================================================
+# Async execution jobs — fire-and-forget model that avoids blocking the
+# agent session on long-running cells. Three new tools plus a `run_async`
+# opt-in on `jupyter_execute_code` and `jupyter_execute_cell`. The Hermes
+# side mirrors `openclaw-plugin/src/jobs.ts` + the run_async branch in
+# `openclaw-plugin/src/index.ts`.
+# ===========================================================================
+
+
+async def _enqueue_async_execute(
+    *,
+    notebook_name: Optional[str],
+    notebook_path: Optional[str],
+    kernel_id: str,
+    code: str,
+    persist_cell_index: Optional[int],
+    on_complete=None,
+) -> str:
+    """Create a JobState, kick off the background WebSocket coroutine, and
+    return the job_id immediately."""
+    job_id = f"job-{int(__import__('time').time() * 1000)}-{_uuid_mod.uuid4().hex[:8]}"
+    job = JobState(
+        id=job_id,
+        notebook_name=notebook_name,
+        notebook_path=notebook_path,
+        kernel_id=kernel_id,
+        code=code,
+        persist_cell_index=persist_cell_index,
+    )
+    register_job(job)
+    job._on_complete = on_complete  # type: ignore[attr-defined]
+    # Fire-and-forget coroutine (schedules but does not await)
+    asyncio.create_task(
+        _execute_code_async_for_kernel(kernel_id, code, job_id, on_complete),
+    )
+    return job_id
+
+
+async def _execute_code_async_for_kernel(
+    kernel_id: str,
+    code: str,
+    job_id: str,
+    on_complete,
+) -> None:
+    """Thin wrapper around jobs._execute_code_ws_async that resolves the
+    stored callback if `on_complete` was omitted."""
+    if not _HAS_WEBSOCKETS:
+        finalize(job_id, "failed", "websockets library not installed")
+        return
+    from .jobs import _execute_code_ws_async as _do_run
+    job = get_job(job_id)
+    callback = on_complete if on_complete is not None else (job._on_complete if job else None)  # type: ignore[attr-defined]
+    await _do_run(kernel_id, code, job_id, on_complete=callback)
+
+
+async def jupyter_get_job_result(args: dict, **kwargs) -> str:
+    """Poll a fire-and-forget execute for its result."""
+    job_id = str(args.get("job_id", ""))
+    if not job_id:
+        return "Get job\n\njob_id is required."
+    wait = bool(args.get("wait", False))
+    timeout_ms = int(args.get("timeout_ms") or 15000)
+    job = get_job(job_id)
+    if job is None:
+        return f"Get job\n\nNo job with id {job_id}. Expired (TTL 30 min) or deleted."
+    if wait and job.status in ("queued", "running"):
+        try:
+            await asyncio.wait_for(job._finalize_event.wait(), timeout=timeout_ms / 1000.0)
+        except asyncio.TimeoutError:
+            pass
+        job = get_job(job_id) or job
+    summary = _summarise_job(job)
+    outputs = _format_job_outputs(job)
+    body = f"{summary}\n\noutputs:\n{outputs}"
+    if job.error_message:
+        body += f"\n\nerror: {job.error_message}"
+    return f"Job {job.id}\n\n{body}"
+
+
+async def jupyter_list_jobs(args: dict, **kwargs) -> str:
+    """List async jobs."""
+    status_filter = str(args.get("status_filter") or "")
+    jobs = list_jobs()
+    if status_filter:
+        jobs = [j for j in jobs if j.status == status_filter]
+    if not jobs:
+        return f"Jobs\n\nNo jobs{(' with status=' + status_filter) if status_filter else ''}."
+    lines = [f"{len(jobs)} job(s):"]
+    for j in jobs:
+        age = int(__import__("time").time() - j.started_at)
+        lines.append(
+            f"  {j.id}  {j.status:<11}  kernel={j.kernel_id}  "
+            f"chunks={len(j.outputs)}  started={age}s ago  "
+            f"notebook={j.notebook_path or '(detached)'}"
+        )
+    return f"Jobs\n\n" + "\n".join(lines)
+
+
+async def jupyter_cancel_job(args: dict, **kwargs) -> str:
+    """Cancel a queued/running async execution."""
+    job_id = str(args.get("job_id", ""))
+    if not job_id:
+        return "Cancel job\n\njob_id is required."
+    job = get_job(job_id)
+    if job is None:
+        return f"Cancel job\n\nNo job with id {job_id}."
+    if job.status in ("succeeded", "failed", "cancelled"):
+        return f"Cancel job\n\nJob {job_id} already terminal ({job.status}); nothing to do."
+    try:
+        await _interrupt_kernel(job.kernel_id)
+    except Exception as e:
+        return f"Cancel job\n\n[ERROR] interrupt failed: {e}"
+    # The async coroutine's connection-close handler will transition the job.
+    try:
+        await asyncio.wait_for(job._finalize_event.wait(), timeout=5)
+    except asyncio.TimeoutError:
+        pass
+    final = get_job(job_id)
+    if final is None:
+        return f"Cancel job\n\nCancelled {job_id}."
+    return f"Cancel job {job_id}\n\nstatus={final.status}\n\noutputs:\n{_format_job_outputs(final)}"
+
+
+async def _interrupt_kernel_local(kernel_id: str) -> None:
+    """In-process helper to interrupt a kernel. The async-job cancel path is
+    the only caller; uses the lower-level `_interrupt_kernel` helper."""
+    await _interrupt_kernel(kernel_id)
+
+
+# ---------------------------------------------------------------------------
+# CRDT-aware collaborators (used by the new tools above). The legacy code
+# path uses _get_notebook / _put_notebook directly; mirrors the TypeScript
+# `mutateNotebook` helper added in src/index.ts.
+# ---------------------------------------------------------------------------
+
+
+async def _get_notebook_raw(path: str) -> dict:
+    """Plain Contents-API fetch (no CRDT)."""
+    encoded = quote(path, safe="/")
+    data = await _req("GET", f"/api/contents/{encoded}?content=1")
+    content = (data or {}).get("content", {}) if isinstance(data, dict) else {}
+    return content if isinstance(content, dict) else {}
+
+
+async def _get_notebook_on_room(path: str):
+    """CRDT-aware read of a notebook's cells via the existing CollabRoom."""
+    room = await _open_collab_room(_state.current_notebook or path, path)
+    if room is None:
+        return await _get_notebook_raw(path)
+    try:
+        # Wait briefly for sync then pull.
+        import asyncio as _aio
+        await _aio.sleep(0.05)
+        cells = room.read_cells()
+        return {"cells": cells, "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    except Exception:
+        return await _get_notebook_raw(path)
+
+
+async def _put_notebook_raw(path: str, notebook: dict) -> None:
+    encoded = quote(path, safe="/")
+    await _req("PUT", f"/api/contents/{encoded}", body={
+        "type": "notebook",
+        "content": notebook,
+    })
+
+
+async def _save_notebook_via_collab_or_put(path: str, notebook: dict) -> None:
+    """Mirror of the TypeScript `mutateNotebook` helper: prefer CRDT, fall back to PUT."""
+    used_crdt = False
+    if await _ensure_collab_probed() and _state.current_notebook:
+        room = _get_collab_room(_state.current_notebook)
+        if room is not None:
+            try:
+                cells = notebook.get("cells", [])
+                room.replace_all_cells(cells)
+                await room.flush()
+                used_crdt = True
+            except Exception as e:  # pragma: no cover - depends on deps
+                logger.warning("CRDT write failed, falling back to PUT: %s", e)
+    if not used_crdt:
+        await _put_notebook_raw(path, notebook)

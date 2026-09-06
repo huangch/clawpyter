@@ -1,0 +1,39 @@
+# ---------------------------------------------------------------------------
+# OpenClaw plugin subtree — local install via file:// git source.
+#
+# This file makes `openclaw-plugin/` a self-contained git repository that
+# OpenClaw 2026.9.2+ can install with:
+#     openclaw plugins install file://$(pwd)/openclaw-plugin --force \
+#         --accept-capabilities
+# The .gitignore keeps the inner repo's git-history small (no node_modules,
+# no compiled dist). The parent clawpyter/.git still tracks this directory,
+# but treats any file ignored here as untracked at the parent level too —
+# which is what we want: edits to source flow through normally, while the
+# install-time regeneration of node_modules/ and dist/ does not bloat the
+# nested history used by `git clone file://...`.
+# ---------------------------------------------------------------------------
+
+# Runtime / build artifacts
+node_modules/
+dist/
+*.tsbuildinfo
+.pnp/
+.pnp.js
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Logs
+*.log
+npm-debug.log*
+
+# Local env overrides (only the parent's .env leaks across)
+.env
+.env.local
+
+# Coverage
+coverage/
+.nyc_output/

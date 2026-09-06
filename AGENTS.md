@@ -5,14 +5,17 @@ This file is for *developing* ClawPyter; it is not part of the plugin/skill pack
 
 ## What this repo is
 
-ClawPyter gives AI agents JupyterLab control via a shared set of 20 `jupyter_*` tools,
+ClawPyter gives AI agents JupyterLab control via a shared set of 36 `jupyter_*` tools,
 packaged twice:
 
-- `hermes-plugin/` — Python plugin for Hermes Agent. Also implements **live co-editing**
+- `hermes-plugin/` — Python plugin for Hermes Agent. Implements **live co-editing**
   (Y.js CRDT via `jupyter-collaboration`, see `collab_client.py`); falls back to REST when
   the collaboration deps are missing.
-- `openclaw-plugin/` — TypeScript plugin for OpenClaw. Uses the Contents-API path only
-  (no co-editing yet).
+- `openclaw-plugin/` — TypeScript plugin for OpenClaw. Implements **the same live
+  co-editing** via `yjs` and Node's built-in WebSocket (see `src/collab-client.ts`).
+  `yjs` is a **peer-optional** dependency: the plugin loads and runs without it and
+  silently falls back to the Contents-API path. Tri-state mode mirrors the Hermes side:
+  `JUPYTER_COLLAB_MODE` env var (Hermes) / `collabMode` config (OpenClaw), default `"auto"`.
 - Root shell scripts: `conda-setup.sh` builds an environment; `start-jpy.sh` / `stop-jpy.sh`
   manage a local JupyterLab instance.
 - `Dockerfile` + `docker-build-push.sh` build `huangchtw/clawpyter`, a JupyterLab server
@@ -25,11 +28,17 @@ packaged twice:
 - `./conda-setup.sh ENV_NAME [-r|--reset] [-d|--dev]` creates/populates an env.
   There are **no** opt-out flags: co-editing is mandatory, so it always installs
   both halves of the stack.
-- Deps, all required: `httpx`, `websockets`, `jupyter_nbmodel_client`, `pycrdt`
+- Hermes plugin deps, all required: `httpx`, `websockets`, `jupyter_nbmodel_client`, `pycrdt`
   (agent side) and `jupyterlab`, `jupyter-collaboration` (server side).
   A missing server extension is the dangerous case — it degrades silently to
   whole-file PUTs, so `start-jpy.sh` refuses to launch without it.
 - OpenClaw plugin deps are managed by `npm` inside `openclaw-plugin/` (TypeScript, built to `dist/`).
+  Production runtime: `@sinclair/typebox` (required for tool schema). Optional: `yjs` >= 13.5.22
+  (no `>=X.Y.Z` upper bound — peer dep) enables Y.js CRDT co-editing; Node ≥ 22 supplies
+  the WebSocket client.
+- The two SKILL.md files (`hermes-plugin/SKILL.md` and `openclaw-plugin/skills/clawpyter/SKILL.md`)
+  must stay in sync on tool surface, lifecycle, and the **Co-editing with a human** section.
+  Both runtimes now ship co-editing; the difference is purely which optional CRDT libs to install.
 
 ## Build / deploy
 
@@ -77,11 +86,12 @@ and `CLAWPYTER_NO_PULL=1` to skip the image pull.
 
 ## SKILL.md sync rule (important)
 
-`hermes-plugin/SKILL.md` and `openclaw-plugin/skills/clawpyter/SKILL.md` must stay **in sync**
-with one exception: the Hermes copy additionally contains the **"Co-editing with a human"**
-section. That section is Hermes-only (co-editing is not implemented in the OpenClaw plugin) and
-must NOT be copied into the OpenClaw SKILL.md. When editing one copy, mirror the change in the
-other, keeping that difference intact.
+`hermes-plugin/SKILL.md` and `openclaw-plugin/skills/clawpyter/SKILL.md` must stay **in sync**.
+Both runtimes now ship co-editing (Hermes via `jupyter_nbmodel_client` + `pycrdt`, OpenClaw via
+`yjs` + Node's built-in WebSocket), so the **"Co-editing with a human"** section is present
+in BOTH copies — it is no longer Hermes-only. When editing one copy, mirror the change in
+the other, including the runtime-dependency sentence that names each runtime's CRDT deps
+(`jupyter_nbmodel_client` + `pycrdt` for Hermes, `yjs` for OpenClaw).
 
 ## Conventions
 

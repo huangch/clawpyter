@@ -343,23 +343,35 @@ JUPYTER_OVERWRITE_CELL_SOURCE = {
     "name": "jupyter_overwrite_cell_source",
     "description": (
         "Replace the entire source of an existing cell in the currently activated notebook. "
-        "cell_index is 0-based. cell_source is the complete new content. "
+        "Specify the cell by `cell_index` (0-based) OR `cell_id` (nbformat 4.5 id; "
+        "recommended when concurrent edits may shift indices). `cell_id` wins if both supplied. "
         "Returns a diff showing added (+) and removed (-) lines."
     ),
     "parameters": {
         "type": "object",
         "properties": {
+            "notebook_name": {
+                "type": "string",
+                "description": "Optional: target a specific already-activated notebook by name. Defaults to the current notebook.",
+            },
             "cell_index": {
                 "type": "integer",
-                "description": "0-based index of the cell to overwrite",
+                "description": "0-based index of the cell to overwrite. Omit when passing cell_id.",
                 "minimum": 0,
             },
             "cell_source": {
                 "type": "string",
                 "description": "New complete source for the cell",
             },
+            "cell_id": {
+                "type": "string",
+                "description": "nbformat 4.5 cell id; preferred over cell_index when collaborators may be editing.",
+            },
         },
-        "required": ["cell_index", "cell_source"],
+        "anyOf": [
+            {"required": ["cell_index", "cell_source"]},
+            {"required": ["cell_id", "cell_source"]},
+        ],
     },
 }
 
@@ -367,24 +379,54 @@ JUPYTER_EXECUTE_CELL = {
     "name": "jupyter_execute_cell",
     "description": (
         "Execute an existing code cell in the currently activated notebook and return its outputs. "
-        "cell_index is 0-based. timeout controls the maximum wait in seconds (default: 90). "
+        "Specify the cell by `cell_index` (0-based) OR `cell_id`. "
+        "Synchronous by default; pass run_async=true to fire-and-forget (returns a "
+        "job_id; outputs are written back to the cell when the kernel completes). "
+        "timeout controls the maximum wait in seconds (default: 90). "
         "Returns text, display, and error outputs."
     ),
     "parameters": {
         "type": "object",
         "properties": {
+            "notebook_name": {
+                "type": "string",
+                "description": "Optional: target a specific already-activated notebook by name. Defaults to the current notebook.",
+            },
             "cell_index": {
                 "type": "integer",
-                "description": "0-based index of the code cell to execute",
+                "description": "0-based index of the code cell to execute. Omit when passing cell_id.",
                 "minimum": 0,
+            },
+            "cell_id": {
+                "type": "string",
+                "description": "nbformat 4.5 cell id; preferred over cell_index when collaborators may be editing.",
             },
             "timeout": {
                 "type": "integer",
-                "description": "Maximum execution time in seconds (default: 90)",
+                "description": "Maximum execution time in seconds (default: 90). Ignored when run_async=true.",
                 "minimum": 1,
             },
+            "run_async": {
+                "type": "boolean",
+                "default": False,
+                "description": "Fire-and-forget execution; returns a job_id instead of waiting for outputs.",
+            },
+            "stream": {
+                "type": "boolean",
+                "default": False,
+                "description": "Enable streaming progress (including time indicator) updates for long-running cells.",
+            },
+            "progress_interval": {
+                "type": "integer",
+                "default": 5,
+                "minimum": 1,
+                "description": "Seconds between progress updates (MCP keepalive + optional stream log).",
+            },
         },
-        "required": ["cell_index"],
+        "anyOf": [
+            {"required": ["cell_index"]},
+            {"required": ["cell_id"]},
+        ],
     },
 }
 
@@ -398,6 +440,10 @@ JUPYTER_INSERT_EXECUTE_CODE_CELL = {
     "parameters": {
         "type": "object",
         "properties": {
+            "notebook_name": {
+                "type": "string",
+                "description": "Optional: target a specific already-activated notebook by name. Defaults to the current notebook.",
+            },
             "cell_index": {
                 "type": "integer",
                 "description": "0-based insertion position; -1 to append at end",
@@ -412,6 +458,17 @@ JUPYTER_INSERT_EXECUTE_CODE_CELL = {
                 "description": "Maximum execution time in seconds (default: 90)",
                 "minimum": 1,
             },
+            "stream": {
+                "type": "boolean",
+                "default": False,
+                "description": "Enable streaming progress updates while the cell runs.",
+            },
+            "progress_interval": {
+                "type": "integer",
+                "default": 5,
+                "minimum": 1,
+                "description": "Seconds between progress updates (MCP keepalive + optional stream log).",
+            },
         },
         "required": ["cell_index", "cell_source"],
     },
@@ -421,23 +478,35 @@ JUPYTER_READ_CELL = {
     "name": "jupyter_read_cell",
     "description": (
         "Read a single cell from the currently activated notebook, returning its metadata "
-        "(index, type, execution count), source, and outputs (for code cells). "
-        "cell_index is 0-based."
+        "(index, id, type, execution count), source, and outputs (for code cells). "
+        "Specify the cell by `cell_index` (0-based) OR `cell_id` (nbformat 4.5 id; "
+        "preferred when concurrent edits may shift indices)."
     ),
     "parameters": {
         "type": "object",
         "properties": {
+            "notebook_name": {
+                "type": "string",
+                "description": "Optional: target a specific already-activated notebook by name. Defaults to the current notebook.",
+            },
             "cell_index": {
                 "type": "integer",
-                "description": "0-based index of the cell to read",
+                "description": "0-based index of the cell to read. Omit when passing cell_id.",
                 "minimum": 0,
+            },
+            "cell_id": {
+                "type": "string",
+                "description": "nbformat 4.5 cell id; preferred over cell_index.",
             },
             "include_outputs": {
                 "type": "boolean",
                 "description": "Include cell outputs for code cells (default: true)",
             },
         },
-        "required": ["cell_index"],
+        "anyOf": [
+            {"required": ["cell_index"]},
+            {"required": ["cell_id"]},
+        ],
     },
 }
 
@@ -471,25 +540,393 @@ JUPYTER_EXECUTE_CODE = {
     "description": (
         "Execute code directly in the kernel without saving to the notebook. "
         "Supports magic commands (%, %%) and shell commands (!). "
-        "Use for: magic commands (%timeit, %pip install), ephemeral calculations, "
-        "shell commands, debugging variable state. "
-        "Do NOT use for: code that should persist in the notebook, long-running tasks. "
-        "Maximum timeout is 60 seconds."
+        "Synchronous by default — returns outputs when the kernel replies or after "
+        "timeout (max 60 s). Pass run_async=true to fire-and-forget: the call returns "
+        "immediately with a job_id, and you poll with jupyter_get_job_result. "
+        "Use synchronous for short snippets; use async for anything that may take "
+        "longer than a minute (training loops, large downloads, deep sleeps). "
+        "Pass `kernel_id` to target a raw (no-notebook) kernel."
     ),
     "parameters": {
         "type": "object",
         "properties": {
+            "notebook_name": {
+                "type": "string",
+                "description": "Optional: target a specific already-activated notebook by name. Defaults to the current notebook.",
+            },
             "code": {
                 "type": "string",
                 "description": "Code to execute in the kernel",
             },
             "timeout": {
                 "type": "integer",
-                "description": "Maximum execution time in seconds (default: 30, max: 60)",
+                "description": "Maximum execution time in seconds (default: 30, max: 60). Ignored when run_async=true.",
                 "minimum": 1,
                 "maximum": 60,
             },
+            "run_async": {
+                "type": "boolean",
+                "default": False,
+                "description": "Fire-and-forget execution; returns a job_id instead of waiting for outputs.",
+            },
+            "kernel_id": {
+                "type": "string",
+                "description": "Optional: target a specific kernel by ID (raw, no notebook). Defaults to the current notebook's kernel.",
+            },
+            "stream": {
+                "type": "boolean",
+                "default": False,
+                "description": "Enable streaming progress updates while the code runs.",
+            },
+            "progress_interval": {
+                "type": "integer",
+                "default": 5,
+                "minimum": 1,
+                "description": "Seconds between progress updates (MCP keepalive + optional stream log).",
+            },
         },
         "required": ["code"],
+    },
+}
+
+
+# ===========================================================================
+# New schemas — closing the REST-API gap with jupyter-mcp-server.
+# Keep in sync with the corresponding `async def jupyter_*` handlers below.
+# ===========================================================================
+
+JUPYTER_EDIT_CELL_SOURCE = {
+    "name": "jupyter_edit_cell_source",
+    "description": (
+        "Apply a literal find-and-replace to one cell's source. Useful for surgical edits "
+        "(import line, variable rename) when overwriting the whole source via "
+        "jupyter_overwrite_cell_source is wasteful or risky. Returns the diff plus the new "
+        "cell source. Specify the cell by `cell_index` (0-based) OR `cell_id` (preferred)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "notebook_name": {
+                "type": "string",
+                "description": "Optional: target a specific already-activated notebook by name. Defaults to the current notebook.",
+            },
+            "cell_index": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "0-based cell index. Omit when passing cell_id.",
+            },
+            "old_string": {"type": "string", "description": "Exact substring to find"},
+            "new_string": {"type": "string", "description": "Replacement string"},
+            "replace_all": {
+                "type": "boolean",
+                "default": False,
+                "description": "If true, replace every occurrence (default: first only).",
+            },
+            "cell_id": {
+                "type": "string",
+                "description": "nbformat 4.5 cell id; preferred over cell_index.",
+            },
+        },
+        "anyOf": [
+            {"required": ["cell_index", "old_string", "new_string"]},
+            {"required": ["cell_id", "old_string", "new_string"]},
+        ],
+    },
+}
+
+JUPYTER_CLEAR_CELL_OUTPUTS = {
+    "name": "jupyter_clear_cell_outputs",
+    "description": (
+        "Clear outputs of one or more code cells without removing the cells themselves. "
+        "Accepts cell_indices (list of 0-based indices). Empty list clears ALL code cells. "
+        "Returns the number of cells cleared."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "notebook_name": {
+                "type": "string",
+                "description": "Optional: target a specific already-activated notebook by name. Defaults to the current notebook.",
+            },
+            "cell_indices": {
+                "type": "array",
+                "items": {"type": "integer", "minimum": 0},
+                "description": (
+                    "0-based cell indices to clear. Empty or omitted means clear all code cells."
+                ),
+            },
+        },
+        "required": [],
+    },
+}
+
+JUPYTER_CLEAR_CELL_OUTPUT = {
+    "name": "jupyter_clear_cell_output",
+    "description": (
+        "Clear the outputs of a single cell without removing the cell. "
+        "Specify the cell by `cell_index` (0-based) OR `cell_id` (nbformat 4.5). "
+        "jmcp-compatible thin wrapper around jupyter_clear_cell_outputs that targets one cell."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "notebook_name": {
+                "type": "string",
+                "description": "Optional: target a specific already-activated notebook by name. Defaults to the current notebook.",
+            },
+            "cell_index": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "0-based index of the cell to clear. Omit when passing cell_id.",
+            },
+            "cell_id": {
+                "type": "string",
+                "description": "nbformat 4.5 cell id; preferred over cell_index.",
+            },
+        },
+        "anyOf": [
+            {"required": ["cell_index"]},
+            {"required": ["cell_id"]},
+        ],
+    },
+}
+
+JUPYTER_MOVE_CELL = {
+    "name": "jupyter_move_cell",
+    "description": (
+        "Move a cell from source_index to target_index in the currently activated notebook. "
+        "After removal of the source, the target index is applied (standard array splice). "
+        "Both indices are 0-based. `destination_index` is accepted as a legacy alias for `target_index`."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "source_index": {"type": "integer", "minimum": 0, "description": "Source cell index"},
+            "target_index": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Destination index (0-based) after splice.",
+            },
+            "destination_index": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Legacy alias for target_index. Prefer target_index.",
+            },
+        },
+        "required": ["source_index"],
+        "anyOf": [
+            {"required": ["target_index"]},
+            {"required": ["destination_index"]},
+        ],
+    },
+}
+
+JUPYTER_INTERRUPT_CELL = {
+    "name": "jupyter_interrupt_cell",
+    "description": (
+        "Interrupt (SIGINT-style) the kernel attached to the currently activated notebook "
+        "without restarting it. Use this to cancel a long-running cell while preserving "
+        "kernel state. Non-blocking — returns immediately."
+    ),
+    "parameters": {"type": "object", "properties": {}, "required": []},
+}
+
+JUPYTER_LIST_KERNELSPECS = {
+    "name": "jupyter_list_kernelspecs",
+    "description": (
+        "List all kernel specifications this Jupyter server supports (e.g. python3, ir, "
+        "julia-1.10, xpython). Useful when jupyter_use_notebook kernel_id=… needs a specific "
+        "kernel type. Returns TSV with name / display_name / language / codemirror_mode / env."
+    ),
+    "parameters": {"type": "object", "properties": {}, "required": []},
+}
+
+JUPYTER_NBCONVERT = {
+    "name": "jupyter_nbconvert",
+    "description": (
+        "Convert a notebook to another format via /api/nbconvert "
+        "(html | python | script | markdown | rst | latex | asciidoc | slides | pdf). "
+        "Returned as a text/plain preview (first 8192 chars). Path is relative to the "
+        "Jupyter server root."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "notebook_path": {
+                "type": "string",
+                "description": "Path to the source notebook, relative to the Jupyter server root.",
+            },
+            "format": {
+                "type": "string",
+                "enum": ["html", "python", "script", "markdown", "rst", "latex", "asciidoc", "slides", "pdf"],
+                "description": "Output format.",
+            },
+            "download_as": {
+                "type": "string",
+                "description": "Optional filename hint for downloader clients.",
+            },
+        },
+        "required": ["notebook_path", "format"],
+    },
+}
+
+JUPYTER_UPLOAD_FILE = {
+    "name": "jupyter_upload_file",
+    "description": (
+        "Upload plain text or base64-encoded file content to the Jupyter server at the given "
+        "path. Use format='text' for source/scripts/logs, 'base64' for binary data. Creates "
+        "a new file or overwrites an existing one."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Server-relative destination path."},
+            "content": {"type": "string", "description": "File content (UTF-8 text or base64)."},
+            "format": {
+                "type": "string",
+                "enum": ["text", "base64"],
+                "default": "text",
+                "description": "Content encoding.",
+            },
+        },
+        "required": ["path", "content"],
+    },
+}
+
+JUPYTER_SAVE_FILE = {
+    "name": "jupyter_save_file",
+    "description": (
+        "Save plain-text or base64-encoded content to the Jupyter server. Convenience alias "
+        "for jupyter_upload_file when the intent is 'create a text file under the server root'. "
+        "Set format='base64' for binary."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "content": {"type": "string"},
+            "format": {"type": "string", "enum": ["text", "base64"], "default": "text"},
+        },
+        "required": ["path", "content"],
+    },
+}
+
+JUPYTER_MKDIR = {
+    "name": "jupyter_mkdir",
+    "description": "Create a new directory on the Jupyter server at the given path.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Server-relative directory path."},
+        },
+        "required": ["path"],
+    },
+}
+
+JUPYTER_DELETE_FILE = {
+    "name": "jupyter_delete_file",
+    "description": "Delete a file or directory from the Jupyter server.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Server-relative path to delete."},
+        },
+        "required": ["path"],
+    },
+}
+
+JUPYTER_RENAME_FILE = {
+    "name": "jupyter_rename_file",
+    "description": (
+        "Rename or move a file/directory on the Jupyter server. Uses PATCH /api/contents/"
+        "<old> so sibling files keep their modification time."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "old_path": {"type": "string"},
+            "new_path": {"type": "string"},
+        },
+        "required": ["old_path", "new_path"],
+    },
+}
+
+JUPYTER_COPY_FILE = {
+    "name": "jupyter_copy_file",
+    "description": "Server-side copy — faster than upload-then-download — for files and directories.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "old_path": {"type": "string"},
+            "new_path": {"type": "string"},
+        },
+        "required": ["old_path", "new_path"],
+    },
+}
+
+
+# ===========================================================================
+# Async execution jobs (added 2026-09-06).
+# ===========================================================================
+
+JUPYTER_GET_JOB_RESULT = {
+    "name": "jupyter_get_job_result",
+    "description": (
+        "Poll a fire-and-forget execute for its result. With run_async=true the "
+        "execute tools return immediately and put the job's id in the response; "
+        "this tool polls that job. Set wait=true with timeout_ms to block (server-"
+        "side bound) until the kernel replies or the timeout expires."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "job_id": {"type": "string", "description": "Job id returned by run_async execute."},
+            "wait": {
+                "type": "boolean",
+                "default": False,
+                "description": "Block on this call until the job reaches a terminal state or timeout_ms expires.",
+            },
+            "timeout_ms": {
+                "type": "integer",
+                "default": 15000,
+                "description": "Maximum time to wait when wait=true (milliseconds).",
+            },
+        },
+        "required": ["job_id"],
+    },
+}
+
+JUPYTER_LIST_JOBS = {
+    "name": "jupyter_list_jobs",
+    "description": (
+        "List async-execution jobs (queued, running, succeeded, failed, cancelled). "
+        "Optionally filter by status_filter."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "status_filter": {
+                "type": "string",
+                "enum": ["queued", "running", "succeeded", "failed", "cancelled"],
+                "description": "If present, only return jobs in this status.",
+            },
+        },
+        "required": [],
+    },
+}
+
+JUPYTER_CANCEL_JOB = {
+    "name": "jupyter_cancel_job",
+    "description": (
+        "Cancel a queued/running async execution by interrupting the kernel. The "
+        "kernel cancels the in-flight execute_request; the job's status becomes "
+        "cancelled once the WebSocket closes."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "job_id": {"type": "string", "description": "Job id to cancel."},
+        },
+        "required": ["job_id"],
     },
 }

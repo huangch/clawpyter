@@ -1,6 +1,21 @@
 // Direct Jupyter Lab client — replaces the MCP bridge.
 // Communicates with Jupyter's REST API and WebSocket kernel channels.
 
+import { getJob, finalize, type JobState } from "./jobs.js";
+
+/**
+ * Returns the WebSocket constructor for the current runtime. Prefers Node
+ * ≥22's built-in; falls back to the global polyfill. Throws if neither is
+ * available (extremely unlikely on a modern Node).
+ */
+function WebSocketOrThrow(): typeof WebSocket {
+  const g = globalThis as unknown as { WebSocket?: typeof WebSocket };
+  if (typeof g.WebSocket !== "function") {
+    throw new Error("No WebSocket implementation available");
+  }
+  return g.WebSocket;
+}
+
 type TextResult = {
   content: Array<{ type: "text"; text: string }>;
 };
@@ -26,7 +41,7 @@ type NbOutput = {
   [key: string]: unknown;
 };
 
-type Notebook = {
+export type Notebook = {
   cells: NbCell[];
   metadata: Record<string, unknown>;
   nbformat: number;
@@ -366,6 +381,123 @@ export class JupyterDirectClient {
     await this.request("POST", `/api/kernels/${kernelId}/restart`, {});
   }
 
+  /** Interrupt a running kernel (sends SIGINT without state reset). */
+  async interruptKernel(kernelId: string): Promise<void> {
+    await this.request("POST", `/api/kernels/${kernelId}/interrupt`, {});
+  }
+
+  /** List available kernel specs (python3, r, julia, …). Returns TSV. */
+  async listKernelspecs(): Promise<string> {
+    const data = await this.request<KernelSpecsResponse>(
+      "GET",
+      "/api/kernelspecs",
+    ).catch(() => ({ default: "", kernelspecs: {} as Record<string, KernelSpec> }));
+    const specs = data.kernelspecs ?? {};
+    const entries = Object.entries(specs);
+    if (entries.length === 0) {
+      return "No kernel specifications found on the Jupyter server.";
+    }
+    const rows = entries
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, k]) => {
+        const spec = k.spec ?? { display_name: "unknown", language: "unknown" };
+        const envEntries = Object.entries(spec.env ?? {});
+        const envStr = envEntries.length > 0
+          ? envEntries.map(([k, v]) => `${k}=${v}`).join(";").slice(0, 200)
+          : "unknown";
+        const argv = Array.isArray(spec.argv) ? spec.argv.slice(0, 5).join(" ") : "";
+        return [
+          name,
+          spec.display_name ?? "unknown",
+          spec.language ?? "unknown",
+          spec.codemirror_mode ?? "auto",
+          envStr,
+          argv,
+          "true",
+          argv.length > 0 ? argv : "unknown",
+        ];
+      });
+    return formatTSV(
+      [
+        "Name",
+        "Display_Name",
+        "Language",
+        "CodeMirror_Mode",
+        "Environment",
+        "Help_Links",
+        "Is_Default",
+        "Argv_Sample",
+      ],
+      rows,
+    );
+  }
+
+  /** Convert a notebook to a different format via /api/nbconvert. */
+  async nbconvert(
+    path: string,
+    format: "html" | "python" | "script" | "pdf" | "markdown" | "rst" | "latex" | "asciidoc" | "slides",
+    downloadAs: string = "",
+  ): Promise<string> {
+    const encoded = encodeURIComponent(path).replace(/%2F/g, "/");
+    const url = `/api/nbconvert/${encoded}`;
+    const body: Record<string, unknown> = { type: format };
+    await this.request("POST", url, body);
+    // The Jupyter REST API returns 201 with the converted body as text.
+    // Fetch it via a second request (the POST alone is an *ack*; the body
+    // is the conversion result we want to surface).
+    const result = await fetch(`${this.jupyterUrl}${url}`, {
+      method: "GET",
+      headers: { ...this.authHeaders(), Accept: downloadAs ? "application/octet-stream" : "text/plain" },
+    });
+    if (!result.ok) {
+      throw new Error(`nbconvert fetch failed: HTTP ${result.status}`);
+    }
+    const text = await result.text();
+    if (downloadAs) {
+      return `[Note: downloadAs=${downloadAs} requested; returning plaintext preview (${text.length} chars). Use the HTTP endpoint directly for binary download.]${"\n"}${text.slice(0, 4096)}`;
+    }
+    return text || `[nbconvert returned empty body for ${path} → ${format}]`;
+  }
+
+  /** Upload file content (text) to the Jupyter server. */
+  async uploadFile(path: string, content: string, format: "text" | "base64" = "text"): Promise<void> {
+    const encoded = encodeURIComponent(path).replace(/%2F/g, "/");
+    await this.request("PUT", `/api/contents/${encoded}`, {
+      type: "file",
+      format,
+      content,
+    });
+  }
+
+  /** Create a new directory. */
+  async mkdir(path: string): Promise<void> {
+    const encoded = encodeURIComponent(path).replace(/%2F/g, "/");
+    await this.request("PUT", `/api/contents/${encoded}`, { type: "directory" });
+  }
+
+  /** Delete a file or directory by path. */
+  async deleteFile(path: string): Promise<void> {
+    const encoded = encodeURIComponent(path).replace(/%2F/g, "/");
+    await this.request("DELETE", `/api/contents/${encoded}`);
+  }
+
+  /** Rename / move a file or directory. */
+  async renameFile(oldPath: string, newPath: string): Promise<void> {
+    const encoded = encodeURIComponent(oldPath).replace(/%2F/g, "/");
+    await this.request("PATCH", `/api/contents/${encoded}`, { path: newPath });
+  }
+
+  /** Copy a file or directory server-side. */
+  async copyFile(oldPath: string, newPath: string): Promise<void> {
+    const encoded = encodeURIComponent(oldPath).replace(/%2F/g, "/");
+    await this.request("POST", `/api/contents/${encoded}/copy`, { new_path: newPath });
+  }
+
+  /** Save plain text (or base64 binary) content. Convenience over uploadFile. */
+  async saveFile(path: string, content: string, format: "text" | "base64" = "text"): Promise<void> {
+    return this.uploadFile(path, content, format);
+  }
+
   /** Update the target Jupyter server (for connect_to_jupyter). */
   updateUrl(url: string, token: string): void {
     this.jupyterUrl = url.replace(/\/$/, "");
@@ -375,6 +507,174 @@ export class JupyterDirectClient {
   // -------------------------------------------------------------------------
   // WebSocket code execution
   // -------------------------------------------------------------------------
+
+  /**
+   * Fire-and-forget execute on a kernel. Returns a JobState immediately; the
+   * caller should poll `getJob(job.id)` for status. The function spawns a
+   * background coroutine that runs the WS protocol and buffers outputs.
+   *
+   * If `interruptSignal` is provided (an AbortSignal), the coroutine closes
+   * the WebSocket on abort, which causes Jupyter's kernel to cancel the
+   * `execute_request` and return a reply marked `aborted: true`.
+   */
+  executeCodeAsync(
+    kernelId: string,
+    code: string,
+    opts: {
+      jobId: string;
+      notebookName: string | null;
+      notebookPath: string | null;
+      persistCellIndex: number | null;
+      interruptSignal?: AbortSignal;
+      /**
+       * Called exactly once when the job reaches a terminal state. Use
+       * this to persist outputs into the source notebook. Errors thrown
+       * here are caught and stored on the job so they don't crash the
+       * coroutine.
+       */
+      onComplete?: (job: JobState, finalStatus: "succeeded" | "failed" | "cancelled") => void;
+    },
+  ): { jobId: string; startedAt: number } {
+    const startedAt = Date.now();
+    const wsBase = this.jupyterUrl.replace(/^http/, "ws");
+    const tokenParam = this.jupyterToken ? `?token=${encodeURIComponent(this.jupyterToken)}` : "";
+    const wsUrl = `${wsBase}/api/kernels/${kernelId}/channels${tokenParam}`;
+    const WS = WebSocketOrThrow();
+
+    // Capture an `onComplete` reference so the coroutine can hand completed
+    // jobs back to whatever wants to write outputs back to a notebook.
+    // The callback is invoked exactly once for terminal jobs (succeeded /
+    // failed / cancelled). Persist failures are isolated to the callback.
+    const onComplete = opts.onComplete;
+
+    // Use void instead of await — this function MUST be non-blocking.
+    void (async () => {
+      const ws = new WS(wsUrl);
+      ws.binaryType = "arraybuffer";
+
+      const job = getJob(opts.jobId);
+      if (!job) return;
+      job.status = "running";
+
+      const onAbort = () => {
+        try { ws.close(); } catch { /* ignore */ }
+      };
+      if (opts.interruptSignal) {
+        if (opts.interruptSignal.aborted) {
+          onAbort();
+        } else {
+          opts.interruptSignal.addEventListener("abort", onAbort, { once: true });
+        }
+      }
+
+      ws.onopen = () => {
+        try {
+          const msgId = uuid();
+          const sessionId = uuid();
+          const req = {
+            header: {
+              msg_id: msgId,
+              msg_type: "execute_request",
+              username: "",
+              session: sessionId,
+              date: new Date().toISOString(),
+              version: "5.3",
+            },
+            parent_header: {},
+            metadata: {},
+            content: {
+              code,
+              silent: false,
+              store_history: true,
+              user_expressions: {},
+              allow_stdin: false,
+            },
+            channel: "shell",
+          };
+          ws.send(JSON.stringify(req));
+        } catch (e) {
+          finalize(opts.jobId, "failed", `Failed to send execute_request: ${String(e)}`);
+          try { ws.close(); } catch { /* ignore */ }
+        }
+      };
+
+      ws.onmessage = (event) => {
+        const cur = getJob(opts.jobId);
+        if (!cur) {
+          try { ws.close(); } catch { /* ignore */ }
+          return;
+        }
+        let msg: Record<string, unknown>;
+        try {
+          msg = JSON.parse(String(event.data)) as Record<string, unknown>;
+        } catch {
+          return;
+        }
+        const header = msg.header as Record<string, string> | undefined;
+        const msgType = header?.msg_type ?? "";
+        const channel = (msg.channel as string) ?? "";
+        const content = (msg.content ?? {}) as Record<string, unknown>;
+
+        if (channel === "iopub") {
+          if (msgType === "stream") {
+            const text = String(content.text ?? "");
+            const name = (content.name as string) ?? "stdout";
+            if (text) cur.outputs.push({ stream: name === "stderr" ? "stderr" : "stdout", text });
+          } else if (msgType === "execute_result" || msgType === "display_data") {
+            const data = (content.data ?? {}) as Record<string, unknown>;
+            const text =
+              typeof data["text/plain"] === "string"
+                ? data["text/plain"]
+                : JSON.stringify(data);
+            cur.outputs.push({
+              stream: msgType === "execute_result" ? "result" : "display",
+              text,
+              mime: msgType === "execute_result" ? "text/plain" : undefined,
+              execution_count: (content.execution_count as number | null | undefined) ?? null,
+            });
+          } else if (msgType === "error") {
+            const ename = String(content.ename ?? "Error");
+            const evalue = String(content.evalue ?? "");
+            cur.outputs.push({ stream: "error", text: `${ename}: ${evalue}` });
+            cur.errorMessage = `${ename}: ${evalue}`;
+          }
+        } else if (channel === "shell" && msgType === "execute_reply") {
+          const inner = content as Record<string, unknown>;
+          const status = String(inner["status"] ?? "unknown");
+          finalize(opts.jobId, status === "ok" ? "succeeded" : "failed",
+            status === "ok" ? null : `Execute status: ${status}`,
+          );
+          try { ws.close(); } catch { /* ignore */ }
+          onComplete?.(cur, status === "ok" ? "succeeded" : "failed");
+        }
+      };
+
+      ws.onclose = (event: CloseEvent) => {
+        const cur = getJob(opts.jobId);
+        if (!cur) return;
+        if (cur.status === "running") {
+          finalize(opts.jobId, "cancelled", `WebSocket closed (code ${event.code ?? "?"})`);
+          onComplete?.(cur, "cancelled");
+        }
+      };
+
+      ws.onerror = (event: Event) => {
+        const cur = getJob(opts.jobId);
+        if (!cur) return;
+        finalize(opts.jobId, "failed",
+          `WebSocket error: ${String((event as unknown as { message?: string }).message ?? "unknown")}`);
+        onComplete?.(cur, "failed");
+      };
+    })();
+
+    return { jobId: opts.jobId, startedAt };
+  }
+
+  /**
+   * Execute code on a kernel via the Jupyter WebSocket channel protocol.
+   * Returns an array of output strings.
+   */
+  async executeCode(kernelId: string, code: string, timeoutMs?: number): Promise<string[]> {
 
   /**
    * Execute code on a kernel via the Jupyter WebSocket channel protocol.

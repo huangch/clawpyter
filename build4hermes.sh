@@ -1,9 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Hermes plugin installer for ClawPyter.
+#
+# Honours the Sep-2026 Hermes conventions:
+#   * Uses `get_hermes_home()` semantics via the HERMES_HOME env var
+#     (falls back to $HOME/.hermes when HERMES_HOME is unset).
+#   * Prefers `hermes plugins install -l <dir>` when the Hermes CLI is on PATH
+#     so the post-install scan, manifest validation, env prompt, and
+#     enable-toggle happen through the canonical path.
+#   * Falls back to direct cp -r if Hermes is not installed yet (e.g. during
+#     a fresh bootstrap before pip install hermes-cli), but still honours
+#     HERMES_HOME and warns about skipped scan / enable.
+#   * Verifies every .py under the installed plugin compiles cleanly so an
+#     import-time error in collab_client.py or schemas.py also fails the
+#     install (the loader only runs them on first call).
+
 PLUGIN_SRC="$(cd "$(dirname "$0")/hermes-plugin" && pwd)"
-PLUGIN_DEST="$HOME/.hermes/plugins/clawpyter"
-SKILL_DEST="$HOME/.hermes/skills/clawpyter"
 
 # Hermes itself runs inside its own venv; resolve to the Python interpreter
 # on PATH (which is whichever the user activated, e.g. `conda activate claude`).
@@ -31,6 +44,17 @@ fi
 
 echo "==> Using Python: $PY ($("$PY" --version 2>&1), prefix=$PY_PREFIX)"
 
+# Resolve Hermes home: HERMES_HOME env var first (mirrors Hermes' get_hermes_home()),
+# otherwise the platform default under $HOME.
+if [[ -n "${HERMES_HOME:-}" ]]; then
+  HERMES_HOME_RESOLVED="$HERMES_HOME"
+else
+  HERMES_HOME_RESOLVED="$HOME/.hermes"
+fi
+PLUGIN_DEST="$HERMES_HOME_RESOLVED/plugins/clawpyter"
+SKILL_DEST="$HERMES_HOME_RESOLVED/skills/clawpyter"
+echo "==> Hermes home: $HERMES_HOME_RESOLVED"
+
 echo "==> Installing Python dependencies (httpx, websockets)..."
 "$PY" -m pip install --quiet httpx websockets
 
@@ -39,21 +63,47 @@ echo "    (skip on failure — ClawPyter falls back to REST mode if missing)"
 "$PY" -m pip install --quiet jupyter_nbmodel_client pycrdt || \
   echo "    WARNING: collaboration deps not installed; ClawPyter will run in REST mode only."
 
-echo "==> Copying plugin to $PLUGIN_DEST..."
-mkdir -p "$(dirname "$PLUGIN_DEST")"
-rm -rf "$PLUGIN_DEST"
-cp -r "$PLUGIN_SRC" "$PLUGIN_DEST"
+# ----------------------------------------------------------------------------
+# Install path: prefer `hermes plugins install` so the canonical Hermes
+# installer runs scan + enable. Fall back to cp -r if Hermes isn't on PATH.
+# ----------------------------------------------------------------------------
+if command -v hermes >/dev/null 2>&1; then
+  echo "==> Hermes CLI detected — delegating to 'hermes plugins install'..."
+  # Ensure the user wants to overwrite (mirrors the canonical ask flow).
+  if [[ -d "$PLUGIN_DEST" ]]; then
+    echo "    Existing install at $PLUGIN_DEST — Hermes will replace it."
+  fi
+  if ! hermes plugins install -l "$PLUGIN_SRC" --enable; then
+    echo "ERROR: 'hermes plugins install -l $PLUGIN_SRC --enable' failed." >&2
+    echo "       Re-run with HERMES_PLUGINS_SCAN_ON_INSTALL=false if the security" >&2
+    echo "       scan blocks this trusted local install, or pass --force to override." >&2
+    exit 1
+  fi
+else
+  echo "==> Hermes CLI not on PATH — using direct cp -r fallback."
+  echo "    (Re-run after 'pip install hermes-cli' to enable the canonical install path.)"
+  mkdir -p "$(dirname "$PLUGIN_DEST")"
+  rm -rf "$PLUGIN_DEST"
+  cp -r "$PLUGIN_SRC" "$PLUGIN_DEST"
+  echo "    WARNING: install skipped Hermes' security scan and enable-toggle." >&2
+  echo "             After bootstrapping Hermes, run: hermes plugins enable clawpyter" >&2
+fi
 
+# Skill file: Hermes snapshots skills at session start, so install BEFORE first
+# Hermes launch. Hermes Sep-2026 supports `hermes plugin skills install` as a
+# canonical path; the manual cp is a defensive fallback.
 echo "==> Installing skill file to $SKILL_DEST..."
-# Install the skill directly so it exists *before* Hermes ever starts — Hermes
-# snapshots skills at session start, so a lazy copy from _install_skill() at
-# plugin load time can be missed on the first launch after install.
 mkdir -p "$SKILL_DEST"
-cp -f "$PLUGIN_SRC/SKILL.md" "$SKILL_DEST/SKILL.md"
+if command -v hermes >/dev/null 2>&1 && hermes plugin skills install --help >/dev/null 2>&1; then
+  hermes plugin skills install "$PLUGIN_SRC/SKILL.md" --name clawpyter || \
+    cp -f "$PLUGIN_SRC/SKILL.md" "$SKILL_DEST/SKILL.md"
+else
+  cp -f "$PLUGIN_SRC/SKILL.md" "$SKILL_DEST/SKILL.md"
+fi
 
 echo "==> Verifying plugin files..."
 # Compile every .py under the plugin so an import-time error in collab_client.py
-# or schemas.py also fails the install (the old script only checked 3 files).
+# or schemas.py also fails the install.
 fail=0
 while IFS= read -r -d '' f; do
   if ! "$PY" -m py_compile "$f" >/dev/null 2>&1; then
@@ -66,7 +116,7 @@ done < <(find "$PLUGIN_DEST" -type f -name '*.py' -print0)
 # Stronger post-install check than 'hermes plugins list | grep': confirm the
 # artifact actually landed and the loader will be able to import it.
 [[ -f "$PLUGIN_DEST/__init__.py" ]] || { echo "Missing $PLUGIN_DEST/__init__.py" >&2; exit 1; }
-[[ -f "$SKILL_DEST/SKILL.md" ]]       || { echo "Missing $SKILL_DEST/SKILL.md"   >&2; exit 1; }
+[[ -f "$SKILL_DEST/SKILL.md" ]]       || { echo "Missing $SKILL_DEST/SKILL.md" >&2; exit 1; }
 
 echo "==> Plugin installed. Reloading Hermes plugin registry..."
 if command -v hermes >/dev/null 2>&1; then

@@ -36,7 +36,7 @@ If it prints a row for a live instance, skip to "connect" below.
 **Step 2 — choose a backend:**
 
 - If `docker` CLI is on PATH AND `docker info` works → use `-b docker`
-- Else if `jupyter` is on AND `jupyter server extension list | grep -q jupyter_server_ydoc` → use `-b native` (the conda env must have `jupyter-collaboration` installed; if not, run `bash /workspace/wsinsight/clawpyter/conda-setup.sh <env>` first)
+- Else if `jupyter` is on AND `jupyter server extension list | grep -q jupyter_server_ydoc` → use `-b native` (the conda env must have `jupyter-collaboration` installed; if not, run `bash /workspace/wsinsight/clawpyter/conda-setup.sh <env>` first). The OpenClaw plugin needs the optional `yjs` runtime dep for the CRDT path; without `yjs` the plugin still loads and silently falls back to Contents-API.
 - Otherwise, ask the user which backend they want.
 
 **Step 3 — start the server (auto-picks free port starting at 8888; auto-generates a token):**
@@ -82,18 +82,21 @@ bash /workspace/wsinsight/clawpyter/clawpyter.sh stop -b <backend> -d <notebook_
 
 ## Available tools
 
-There are 20 tools in three categories.
+There are 36 tools in five categories.
 
 | Category | Needs an active notebook? | Tools |
 |---|---|---|
-| 1 — Server | no | 4 |
+| 1 — Server | no | 5 (added `jupyter_list_kernelspecs`) |
 | 2 — Notebook session | no (these are what activate one) | 6 + 3 `_compat` wrappers = 9 |
-| 3 — Cell | **yes** | 7 |
+| 3 — Cell | **yes** | 11 (added `jupyter_edit_cell_source`, `jupyter_clear_cell_outputs`, `jupyter_clear_cell_output` singular, `jupyter_move_cell`, `jupyter_interrupt_cell`) |
+| 4 — File & server-wide operations | no | 8 (`jupyter_nbconvert`, `_upload_file`, `_save_file`, `_mkdir`, `_delete_file`, `_rename_file`, `_copy_file`) |
+| 5 — Async execution control | no | 3 (`jupyter_get_job_result`, `jupyter_list_jobs`, `jupyter_cancel_job`) — see [Async execution](#async-execution-run_async) |
 
-**Category 1 — Server tools (4 tools)**
+**Category 1 — Server tools (5 tools)**
 These tools do not require an active notebook. Use them to inspect the server.
 - `jupyter_list_files` — list files on the server
 - `jupyter_list_kernels` — list running kernels
+- `jupyter_list_kernelspecs` — list available kernel types (`python3`, `ir`, `julia-1.10`, …); use to pick `kernel_id` for `jupyter_use_notebook`
 - `jupyter_connect_to_jupyter` — switch to a different Jupyter server
 - `jupyter_server_info` — show the current server URL and token
 
@@ -109,15 +112,34 @@ These tools manage notebook sessions. You must use one of these before doing any
 - `jupyter_read_notebook` — read cell contents of an open notebook
 - `jupyter_read_notebook_compat` — same as above, but accepts either argument name
 
-**Category 3 — Cell tools (7 tools)**
+**Category 3 — Cell tools (11 tools)**
 These tools REQUIRE an active notebook. They will fail if no notebook is activated.
 - `jupyter_insert_cell` — add a new cell at a position
 - `jupyter_overwrite_cell_source` — replace the content of an existing cell
-- `jupyter_execute_cell` — run an existing cell and save its output
+- `jupyter_edit_cell_source` — find-and-replace inside one cell's source (surgical edits)
+- `jupyter_clear_cell_outputs` — drop stdout / image / execution_count without removing cells (accepts a list of `cell_indices`; empty clears all code cells)
+- `jupyter_clear_cell_output` — jmcp-compatible singular: clear one cell by `cell_index` OR `cell_id` (no list)
+- `jupyter_move_cell` — relocate one cell to a new index (uses `target_index`; `destination_index` accepted as a legacy alias)
+- `jupyter_execute_cell` — run an existing cell and save its output (supports `run_async=true`)
+- `jupyter_interrupt_cell` — SIGINT a running cell without restarting the kernel
 - `jupyter_insert_execute_code_cell` — add a new code cell and run it immediately
 - `jupyter_read_cell` — read one cell's content and outputs
 - `jupyter_delete_cell` — delete one or more cells
-- `jupyter_execute_code` — run code directly in the kernel (output NOT saved to notebook)
+- `jupyter_execute_code` — run code directly in the kernel (output NOT saved to notebook; supports `run_async=true`)
+
+**Category 5 — Async execution control (3 tools) — companion to `run_async=true`.** Do not need an active notebook.
+- `jupyter_get_job_result` — poll / wait for a fire-and-forget execute. `wait=true` blocks up to `timeout_ms` server-side; defaults to a single read.
+- `jupyter_list_jobs` — enumerate every job (optionally filtered by status: `queued | running | succeeded | failed | cancelled`).
+- `jupyter_cancel_job` — interrupt the kernel of a running job; the job's status becomes `cancelled` once the WebSocket closes; outputs collected so far are preserved.
+
+**Category 4 — File & server-wide tools (8 tools)** — close the remaining REST-API surface (notebook conversion, generic file ops). Do not need an active notebook.
+- `jupyter_nbconvert` — convert a notebook to HTML / Python / MarkDown / PDF / RST / LaTeX / AsciiDoc / `script`
+- `jupyter_upload_file` — PUT text or base64 content at an arbitrary server path
+- `jupyter_save_file` — text-friendly alias of `jupyter_upload_file`
+- `jupyter_mkdir` — create a directory
+- `jupyter_delete_file` — `DELETE /api/contents/<path>` (files OR directories)
+- `jupyter_rename_file` — `PATCH /api/contents/<old>` (preserves sibling mtimes)
+- `jupyter_copy_file` — server-side copy (faster than upload-then-download)
 
 ---
 
@@ -143,7 +165,26 @@ Rules for `notebook_name`:
 - Once you assign a `notebook_name`, use the same value every time you refer to that notebook.
 
 ---
+## Addressing cells: `cell_index` vs `cell_id`
 
+Five tools (`jupyter_overwrite_cell_source`, `jupyter_read_cell`, `jupyter_edit_cell_source`, `jupyter_execute_cell`, `jupyter_clear_cell_output`) accept either:
+
+- `cell_index` — 0-based positional index. Fast to write, but any insertion above the target silently shifts it.
+- `cell_id` — `nbformat 4.5` stable `id` string. Safe under concurrent edits. **`cell_id` wins when both are supplied.**
+
+Default to `cell_id` whenever the notebook has been edited by anyone else (human, agent, or another model). Drop back to `cell_index` for trivial single-author loops if it saves typing.
+
+## Multi-notebook addressing: cell tools accept `notebook_name`
+
+Cell tools default to the *currently active* notebook (set by `jupyter_use_notebook` / `jupyter_create_notebook`). To target a different notebook that is already open in this session, pass an optional `notebook_name` argument:
+
+- `jupyter_overwrite_cell_source(notebook_name="analysis.ipynb", cell_id="abc123", cell_source="…")`
+- `jupyter_execute_cell(notebook_name="scratch.ipynb", cell_index=2, run_async=true)`
+- `jupyter_read_cell(notebook_name="scratch.ipynb", cell_id="…")` — switches silently if `notebook_name` resolves; otherwise falls back to current.
+
+If the supplied `notebook_name` is not known to ClawPyter, the tool returns an explicit "Unknown notebook_name" error rather than silently mutating the current notebook.
+
+---
 ## MANDATORY RULE: You must activate a notebook before using any cell tool
 
 Cell tools (Category 3) operate on the currently active notebook. If no notebook is active, every cell tool will return an error.
@@ -158,6 +199,74 @@ Do NOT call `jupyter_use_notebook` afterwards. The notebook is already active.
 Call `jupyter_use_notebook`. This opens the file and activates it.
 
 After activation, call `jupyter_list_notebooks` to confirm the notebook is active.
+
+---
+
+## Async execution (`run_async`)
+
+The standard execute tools (`jupyter_execute_code`, `jupyter_execute_cell`) **block the agent session** until the kernel replies — a 30 min cell means 30 min of dead-air. To avoid this, every execute tool accepts a `run_async=true` flag.
+
+When `run_async=true` the tool:
+1. Sends the `execute_request` to the kernel over WebSocket.
+2. Returns immediately with:
+
+   ```
+   Job queued: job-1725600000000-abc12345
+   notebook: /workspace/notes.ipynb
+   kernel:  3a1b...
+
+   Poll: jupyter_get_job_result(job_id="job-1725600000000-abc12345", wait=true)
+   ```
+
+3. Buffers stdout / stderr / display_data / error chunks in a module-level
+   job registry (30-minute TTL after completion).
+4. Once the kernel returns `execute_reply`, the job is marked
+   `succeeded` / `failed`, outputs are written back to the cell (cell path),
+   and the `jupyter_get_job_result` tool can serve the buffered chunks.
+
+Three companion tools drive the registry:
+
+- `jupyter_get_job_result(job_id, wait=false, timeout_ms=15000)` — read once or
+  block up to `timeout_ms` waiting for terminal status.
+- `jupyter_list_jobs(status_filter=...)` — enumerate; useful for dashboards
+  and "what's still running" reconciliation.
+- `jupyter_cancel_job(job_id)` — SIGINT the kernel; the WebSocket closes,
+  the job transitions to `cancelled`, and outputs already buffered are
+  preserved on the job record.
+
+Cancelled jobs are first-class: unlike a plain timeout (which used to lose
+all output), `cancelled` retains everything streamed so far and is surfaced
+by `jupyter_list_jobs`.
+
+---
+
+## Co-editing with a human
+
+If the Jupyter server has `jupyter-collaboration` installed (and the
+optional `yjs` dependency is present in the OpenClaw plugin runtime),
+ClawPyter opens a shared Y.js CRDT room for each notebook you activate.
+Practical consequences:
+
+- A human watching the notebook in JupyterLab sees your edits land cell-by-cell
+  in real time. Likewise, **the user may edit the same notebook while you are
+  working** — your next `jupyter_read_notebook` or `jupyter_read_cell` will see
+  their latest edits without you having to refetch the file.
+- Therefore: when the user mentions they "just changed something," do not
+  blindly overwrite — call `jupyter_read_notebook` or `jupyter_read_cell` first
+  and merge intelligently.
+- If the server does not have `jupyter-collaboration`, ClawPyter silently falls
+  back to whole-notebook PUTs. In that mode, the user should not edit the
+  notebook in their browser while you are working — last writer wins. When in
+  doubt, see the server URL+token returned by `jupyter_server_info` for the
+  active connection's effective mode. Servers created by ClawPyter's own
+  tooling (the `/workspace/wsinsight/clawpyter/clawpyter.sh` lifecycle
+  script, or the `huangchtw/clawpyter` Docker image) always have
+  `jupyter_server_ydoc` loaded, so REST mode normally means you were pointed
+  at a foreign Jupyter server.
+
+The plugin ships a `collabMode` config knob (`"auto"`/`"on"`/`"off"`) that
+matches the Hermes-side `JUPYTER_COLLAB_MODE` env var. `"auto"` is the
+default: probe once, then prefer CRDT when reachable.
 
 ---
 

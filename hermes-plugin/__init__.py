@@ -1,7 +1,10 @@
 """ClawPyter — Hermes Agent plugin for Jupyter notebook integration.
 
-Provides 20 tools for creating, editing, and executing Jupyter notebooks
-through the Jupyter REST API and WebSocket kernel protocol.
+Provides 35 tools for creating, editing, and executing Jupyter notebooks
+through the Jupyter REST API and WebSocket kernel protocol. Long-running
+executions can be fire-and-forget via `run_async=true` on `jupyter_execute_code`
+and `jupyter_execute_cell`; the agent then polls with `jupyter_get_job_result`
+and cancels with `jupyter_cancel_job`.
 
 Configuration (set in .env or environment):
   JUPYTER_URL             — Jupyter server URL (default: http://127.0.0.1:8888)
@@ -197,6 +200,130 @@ def register(ctx) -> None:
         toolset="clawpyter",
         schema=schemas.JUPYTER_EXECUTE_CODE,
         handler=_tools.jupyter_execute_code,
+        is_async=True,
+    )
+
+
+    # ------------------------------------------------------------------
+    # New tools (added 2026-09-06) — closing the REST-API gap with
+    # jupyter-mcp-server. Must stay in sync with schemas.py + tools.py.
+    # ------------------------------------------------------------------
+    ctx.register_tool(
+        name="jupyter_edit_cell_source",
+        toolset="clawpyter",
+        schema=schemas.JUPYTER_EDIT_CELL_SOURCE,
+        handler=_tools.jupyter_edit_cell_source,
+        is_async=True,
+    )
+    ctx.register_tool(
+        name="jupyter_clear_cell_outputs",
+        toolset="clawpyter",
+        schema=schemas.JUPYTER_CLEAR_CELL_OUTPUTS,
+        handler=_tools.jupyter_clear_cell_outputs,
+        is_async=True,
+    )
+    ctx.register_tool(
+        name="jupyter_clear_cell_output",
+        toolset="clawpyter",
+        schema=schemas.JUPYTER_CLEAR_CELL_OUTPUT,
+        handler=_tools.jupyter_clear_cell_output,
+        is_async=True,
+    )
+    ctx.register_tool(
+        name="jupyter_move_cell",
+        toolset="clawpyter",
+        schema=schemas.JUPYTER_MOVE_CELL,
+        handler=_tools.jupyter_move_cell,
+        is_async=True,
+    )
+    ctx.register_tool(
+        name="jupyter_interrupt_cell",
+        toolset="clawpyter",
+        schema=schemas.JUPYTER_INTERRUPT_CELL,
+        handler=_tools.jupyter_interrupt_cell,
+        is_async=True,
+    )
+    ctx.register_tool(
+        name="jupyter_list_kernelspecs",
+        toolset="clawpyter",
+        schema=schemas.JUPYTER_LIST_KERNELSPECS,
+        handler=_tools.jupyter_list_kernelspecs,
+        is_async=True,
+    )
+    ctx.register_tool(
+        name="jupyter_nbconvert",
+        toolset="clawpyter",
+        schema=schemas.JUPYTER_NBCONVERT,
+        handler=_tools.jupyter_nbconvert,
+        is_async=True,
+    )
+    ctx.register_tool(
+        name="jupyter_upload_file",
+        toolset="clawpyter",
+        schema=schemas.JUPYTER_UPLOAD_FILE,
+        handler=_tools.jupyter_upload_file,
+        is_async=True,
+    )
+    ctx.register_tool(
+        name="jupyter_save_file",
+        toolset="clawpyter",
+        schema=schemas.JUPYTER_SAVE_FILE,
+        handler=_tools.jupyter_save_file,
+        is_async=True,
+    )
+    ctx.register_tool(
+        name="jupyter_mkdir",
+        toolset="clawpyter",
+        schema=schemas.JUPYTER_MKDIR,
+        handler=_tools.jupyter_mkdir,
+        is_async=True,
+    )
+    ctx.register_tool(
+        name="jupyter_delete_file",
+        toolset="clawpyter",
+        schema=schemas.JUPYTER_DELETE_FILE,
+        handler=_tools.jupyter_delete_file,
+        is_async=True,
+    )
+    ctx.register_tool(
+        name="jupyter_rename_file",
+        toolset="clawpyter",
+        schema=schemas.JUPYTER_RENAME_FILE,
+        handler=_tools.jupyter_rename_file,
+        is_async=True,
+    )
+    ctx.register_tool(
+        name="jupyter_copy_file",
+        toolset="clawpyter",
+        schema=schemas.JUPYTER_COPY_FILE,
+        handler=_tools.jupyter_copy_file,
+        is_async=True,
+    )
+
+
+    # ------------------------------------------------------------------
+    # Async-job control (added 2026-09-06) — fire-and-forget execution.
+    # Must stay in sync with schemas.py + tools.py.
+    # ------------------------------------------------------------------
+    ctx.register_tool(
+        name="jupyter_get_job_result",
+        toolset="clawpyter",
+        schema=schemas.JUPYTER_GET_JOB_RESULT,
+        handler=_tools.jupyter_get_job_result,
+        is_async=True,
+    )
+    ctx.register_tool(
+        name="jupyter_list_jobs",
+        toolset="clawpyter",
+        schema=schemas.JUPYTER_LIST_JOBS,
+        handler=_tools.jupyter_list_jobs,
+        is_async=True,
+    )
+    ctx.register_tool(
+        name="jupyter_cancel_job",
+        toolset="clawpyter",
+        schema=schemas.JUPYTER_CANCEL_JOB,
+        handler=_tools.jupyter_cancel_job,
         is_async=True,
     )
 
