@@ -38,21 +38,23 @@ $PROG $VERSION - manage ClawPyter JupyterLab instances
 
 Usage:
   $PROG start    -d DIR -b {native,docker} [-p PORT] [-t TOKEN|--no-token]
-  $PROG stop     -d DIR -b {native,docker} [--force]
-  $PROG restart  -d DIR -b {native,docker} [-p PORT] [-t TOKEN|--no-token]
+  $PROG stop     [-d DIR] [-b BACKEND] [--force]
+  $PROG restart  [-d DIR] [-b BACKEND] [-p PORT] [-t TOKEN|--no-token] [--force]
   $PROG status   [-d DIR] [-b BACKEND] [--all]
-  $PROG logs     -d DIR -b {native,docker} [-f]
+  $PROG logs     [-d DIR] [-b BACKEND] [-f]
   $PROG list     [-d DIR] [-b BACKEND] [--all] [--prune]
   $PROG -h | --help
   $PROG --version
+  (stop / restart / logs resolve missing -d/-b from the global registry when
+   exactly one live instance matches; otherwise pass both explicitly.)
 
 Backends:
   native    jupyter lab on the host (requires conda env with jupyter + collaboration extension)
   docker    container from $IMAGE_ID
 
 Options:
-  -d, --data-dir  DIR      Project directory whose notebooks Jupyter serves (required for start/stop/restart/logs).
-  -b, --backend   BACKEND  native | docker (required for most subcommands).
+  -d, --data-dir  DIR      Project directory. Required for start; auto-resolved from the global registry for stop/restart/status/logs/list when unambiguous.
+  -b, --backend   BACKEND  native | docker. Required for start; auto-resolved when unambiguous.
   -p, --port      PORT     Host port; default 8888. Native auto-finds a free port if taken; docker fails.
   -t, --token     TOKEN    Auth token. Omit for an auto-generated UUID; pass "none" or use --no-token to disable.
       --no-token           Disable authentication explicitly (JupyterServer empty token).
@@ -235,6 +237,14 @@ PY
 # idempotent: registering the same dir twice does nothing; the entry survives
 # across `stop` so `list` still shows stale entries until `--prune` runs.
 # ---------------------------------------------------------------------------
+# Recover HOME under `set -u` (the script's flag set on line 25) when
+# invoked from an env-stripped shell (e.g. `env -i bash …`). `getent
+# passwd $UID` works on POSIX; macOS shells always expand HOME before
+# reaching set -u, so the env-stripped path is a Linux-only corner.
+if [[ -z "${HOME:-}" ]]; then
+    HOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6 || true)"
+    [[ -z "${HOME:-}" ]] && HOME="/tmp"
+fi
 GLOBAL_REGISTRY_DIR="${HOME}/.clawpyter/registry"
 
 _data_dir_key() {
@@ -279,6 +289,90 @@ global_state_all_data_dirs() {
         [[ -f "$f" ]] || continue
         cat "$f"
     done | sort -u
+}
+
+# Resolve a (data_dir, backend) pair from the registry + state files. The
+# caller may supply either, both, or neither:
+#   * both supplied            → narrowed scan; must match exactly one row.
+#   * only data_dir supplied   → narrowed scan; backend inferred when unique.
+#   * only backend supplied    → across all data_dirs; one match expected.
+#   * neither supplied         → across everything; expects an unambiguous
+#                                single live instance.
+# Returns "DATA_DIR::BACKEND::PORT" on stdout (one line), or prints an
+# error to stderr and returns 1. Used by cmd_stop / cmd_logs so they can
+# be called without -d/-b when there's exactly one live instance.
+resolve_target_instance() {
+    # Usage: resolve_target_instance [data_dir] [backend]
+    # Either argument or both may be supplied. With a single live match,
+    # prints it as "DATA_DIR::BACKEND::PORT" on stdout. Otherwise prints
+    # an error to stderr and returns 1.
+    local want_dir="${1:-}" want_backend="${2:-}"
+    local -a found=()
+    while IFS= read -r d; do
+        [[ -z "$d" ]] && continue
+        local f; f="$(state_file "$d")"
+        [[ -f "$f" ]] || continue
+        while IFS=$'\t' read -r backend_inst port_key; do
+            [[ -z "$backend_inst" || -z "$port_key" ]] && continue
+            if [[ -n "$want_backend" && "$backend_inst" != "$want_backend" ]]; then continue; fi
+            found+=("$d::$backend_inst::$port_key")
+        done < <(python3 - "$f" <<'PY'
+import json, os, subprocess, sys
+path = sys.argv[1]
+try:
+    with open(path) as fh:
+        data = json.load(fh)
+except (OSError, ValueError):
+    sys.exit(0)
+# Only emit rows that are still alive (kernel running / container
+# running). cmd_stop will rely on `port` as the disambiguator; native
+# stores both `port` and `pid`, fall back to pid when port is unset
+# (rare — port is mandatory today).
+for key, inst in data.get("instances", {}).items():
+    b = inst.get("backend")
+    port = inst.get("port") or ""
+    if b == "native":
+        pid = inst.get("pid")
+        try:
+            # os.kill(pid, 0) returns None on success and raises on failure;
+            # the `!= 0` comparison in the original draft always matched
+            # (None is not 0) so the row was wrongly dropped. Just call it
+            # and rely on the success=return-without-raise contract.
+            if not pid or int(pid) <= 0:
+                continue
+            os.kill(int(pid), 0)
+        except (OSError, ProcessLookupError, ValueError, TypeError):
+            continue
+        if not port:
+            port = str(pid)
+        print(f"{b}\t{port}")
+    elif b == "docker":
+        cid = inst.get("container")
+        out = subprocess.run(["docker", "ps", "-q", "--filter", f"id={cid}"],
+                             capture_output=True, text=True) if cid \
+            else subprocess.CompletedProcess(args=[], returncode=1, stdout="")
+        if out.stdout.strip():
+            print(f"{b}\t{port}")
+PY
+)
+    done < <(global_state_all_data_dirs)
+    if [[ -n "$want_dir" ]]; then
+        local abs; abs="$(cd "$want_dir" 2>/dev/null && pwd -P || echo "$want_dir")"
+        local -a kept=()
+        for entry in "${found[@]}"; do
+            [[ "${entry%%::*}" == "$abs" ]] && kept+=("$entry")
+        done
+        found=("${kept[@]}")
+    fi
+    case "${#found[@]}" in
+        0)  echo "Error: no live clawpyter instances match (data_dir='$want_dir', backend='$want_backend'). Run '$PROG list' to see what's running." >&2
+            return 1 ;;
+        1)  printf '%s\n' "${found[0]}"; return 0 ;;
+        *)
+            echo "Error: $(( ${#found[@]} )) live clawpyter instances match; pass -d/--data-dir and/or -b/--backend to pick one." >&2
+            printf '  %s\n' "${found[@]}" >&2
+            return 1 ;;
+    esac
 }
 
 # ---------------------------------------------------------------------------
@@ -867,8 +961,14 @@ cmd_stop() {
             *) echo "Unknown option: $1" >&2; exit 1 ;;
         esac
     done
-    [[ -n "$data_dir" ]] || { echo "Error: --data-dir is required." >&2; exit 1; }
-    [[ -n "$backend"  ]] || { echo "Error: --backend is required." >&2; exit 1; }
+    # Resolve any missing -d / -b from the global registry. With both
+    # absent, we succeed only when exactly one live instance exists;
+    # otherwise we error with a clear list of candidates.
+    if [[ -z "$data_dir" || -z "$backend" ]]; then
+        local resolved; resolved="$(resolve_target_instance "$data_dir" "$backend")" || exit 1
+        if [[ -z "$data_dir" ]]; then data_dir="${resolved%%::*}"; fi
+        if [[ -z "$backend"  ]]; then backend="${resolved#*::}";  backend="${backend%::*}"; fi
+    fi
     local f; f="$(state_file "$data_dir")"
     if [[ ! -f "$f" ]]; then
         if [[ $tolerate_missing -eq 1 ]]; then return 0; fi
@@ -912,8 +1012,15 @@ cmd_restart() {
             *) start_args+=("$1"); shift ;;
         esac
     done
-    [[ -n "$data_dir" ]] || { echo "Error: --data-dir is required." >&2; exit 1; }
-    [[ -n "$backend"  ]] || { echo "Error: --backend is required." >&2; exit 1; }
+    # Same resolver behaviour as stop / logs: missing -d/-b is OK when
+    # there's exactly one live instance.
+    if [[ -z "$data_dir" || -z "$backend" ]]; then
+        local resolved; resolved="$(resolve_target_instance "$data_dir" "$backend")" || exit 1
+        if [[ -z "$data_dir" ]]; then data_dir="${resolved%%::*}"; fi
+        if [[ -z "$backend"  ]]; then backend="${resolved#*::}";  backend="${backend%::*}"; fi
+        stop_args+=(-d "$data_dir" -b "$backend")
+        start_args+=(-d "$data_dir" -b "$backend")
+    fi
     [[ $force -eq 1 ]] && stop_args=(--force "${stop_args[@]}")
     # Always tolerate stop failing — restart is meaningful even if there was
     # nothing to stop (it then collapses to a plain start).
@@ -958,8 +1065,12 @@ cmd_logs() {
             *) echo "Unknown option: $1" >&2; exit 1 ;;
         esac
     done
-    [[ -n "$data_dir" ]] || { echo "Error: --data-dir is required." >&2; exit 1; }
-    [[ -n "$backend"  ]] || { echo "Error: --backend is required." >&2; exit 1; }
+    # Resolve missing -d / -b from the registry when unambiguous.
+    if [[ -z "$data_dir" || -z "$backend" ]]; then
+        local resolved; resolved="$(resolve_target_instance "$data_dir" "$backend")" || exit 1
+        if [[ -z "$data_dir" ]]; then data_dir="${resolved%%::*}"; fi
+        if [[ -z "$backend"  ]]; then backend="${resolved#*::}";  backend="${backend%::*}"; fi
+    fi
     logs_for "$data_dir" "$backend" "$follow"
 }
 
